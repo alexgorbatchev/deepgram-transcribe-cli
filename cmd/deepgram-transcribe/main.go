@@ -21,7 +21,8 @@ import (
 )
 
 var (
-	version = "0.1.0"
+	// version is populated at compile time by GoReleaser via ldflags (-X main.version={{.Version}})
+	version = "dev"
 
 	// Flag variables
 	extraTerms       []string
@@ -40,13 +41,13 @@ var (
 	silenceThreshold string
 	silenceDuration  string
 	limitHistory     int
-	showVersion      bool
 )
 
 func NewRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use:   "deepgram-transcribe [command|flags] <audio-file>",
-		Short: "Transcribe audio phone conversations using Deepgram and output Markdown",
+		Use:     "deepgram-transcribe [command|flags] <audio-file>",
+		Short:   "Transcribe audio phone conversations using Deepgram and output Markdown",
+		Version: version,
 		Long: `deepgram-transcribe is a CLI tool that sends audio files (mp3, m4a, wav, etc.) to Deepgram API v1/listen
 and formats the transcript into clean Markdown with speaker diarization and custom keyterm boosting.
 
@@ -58,15 +59,7 @@ Subcommands:
 Default transcription output goes to stdout:
   deepgram-transcribe conversation.m4a > conversation.md
   deepgram-transcribe -t Envoy -t Alex conversation.mp3 -o output.md`,
-		Args: func(cmd *cobra.Command, args []string) error {
-			if showVersion {
-				return nil
-			}
-			if len(args) != 1 {
-				return fmt.Errorf("accepts 1 arg(s), received %d", len(args))
-			}
-			return nil
-		},
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runTranscribeWithEndpoint(cmd, args, "", deepgram.DefaultCacheDir())
 		},
@@ -90,8 +83,6 @@ Default transcription output goes to stdout:
 	flags.BoolVar(&noTrimSilence, "no-trim-silence", false, "Disable silence/dead-air trimming")
 	flags.StringVar(&silenceThreshold, "silence-threshold", "-30dB", "Noise threshold for silence removal (e.g. -30dB, -40dB)")
 	flags.StringVar(&silenceDuration, "silence-duration", "2.0", "Minimum silence duration in seconds to trim (e.g. 2.0)")
-
-	flags.BoolVarP(&showVersion, "version", "v", false, "Print version information and exit")
 
 	// Subcommand alias for 'deepgram-transcribe transcribe <file>'
 	transcribeSubCmd := &cobra.Command{
@@ -278,11 +269,6 @@ func newCacheCmdWithDir(cacheDir string) *cobra.Command {
 }
 
 func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoint, cacheDir string) error {
-	if showVersion {
-		cmd.Printf("transcribe version %s\n", version)
-		return nil
-	}
-
 	audioPath := args[0]
 
 	fileInfo, err := os.Stat(audioPath)
@@ -290,7 +276,7 @@ func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoi
 		return fmt.Errorf("checking audio file %q: %w", audioPath, err)
 	}
 
-	// Read original audio bytes FIRST for instant cache checking (0ms ffmpeg overhead on cache hit)
+	// Read original audio bytes FIRST for instant cache checking
 	originalAudioBytes, err := os.ReadFile(audioPath)
 	if err != nil {
 		return fmt.Errorf("reading audio file %q: %w", audioPath, err)
