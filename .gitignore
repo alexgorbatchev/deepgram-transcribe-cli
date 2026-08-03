@@ -1,0 +1,17 @@
+# Binaries and build outputs
+/bin/
+*.exe
+*.exe?
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+coverage.out
+coverage.html
+*.test
+
+# Environment & temporary files
+.env
+.tmp/
+*.tmp
