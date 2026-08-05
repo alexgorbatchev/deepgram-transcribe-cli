@@ -102,10 +102,10 @@ func TestRunTranscribeVersion(t *testing.T) {
 func TestCostAndHistoryCommands(t *testing.T) {
 	dir := t.TempDir()
 
-	rec := deepgram.JobRecord{
-		RequestID:       "req-uuid-12345",
-		Filename:        "call.m4a",
-		FilePath:        filepath.Join(dir, "call.m4a"),
+	recActual := deepgram.JobRecord{
+		RequestID:       "req-actual-123",
+		Filename:        "actual.m4a",
+		FilePath:        filepath.Join(dir, "actual.m4a"),
 		SHA256:          "hash1234567890",
 		Timestamp:       time.Date(2026, 3, 31, 14, 0, 0, 0, time.UTC),
 		DurationSeconds: 600.0,
@@ -113,12 +113,31 @@ func TestCostAndHistoryCommands(t *testing.T) {
 		Model:           "nova-3",
 		Preprocessed:    true,
 		CostUSD:         "$0.043",
+		CostIsActual:    true,
 	}
 
-	if err := deepgram.SaveJobRecord(dir, rec); err != nil {
-		t.Fatalf("SaveJobRecord failed: %v", err)
+	recEstimated := deepgram.JobRecord{
+		RequestID:       "req-estimate-456",
+		Filename:        "estimate.m4a",
+		FilePath:        filepath.Join(dir, "estimate.m4a"),
+		SHA256:          "hash0987654321",
+		Timestamp:       time.Date(2026, 3, 31, 15, 0, 0, 0, time.UTC),
+		DurationSeconds: 300.0,
+		Channels:        1,
+		Model:           "nova-3",
+		Preprocessed:    true,
+		CostUSD:         "$0.021",
+		CostIsActual:    false,
 	}
 
+	if err := deepgram.SaveJobRecord(dir, recActual); err != nil {
+		t.Fatalf("SaveJobRecord actual failed: %v", err)
+	}
+	if err := deepgram.SaveJobRecord(dir, recEstimated); err != nil {
+		t.Fatalf("SaveJobRecord estimated failed: %v", err)
+	}
+
+	// Test history command without API key -> recActual shows $0.043, recEstimated shows N/A yet
 	var histBuf bytes.Buffer
 	histCmd := newHistoryCmdWithDir(dir)
 	histCmd.SetOut(&histBuf)
@@ -127,23 +146,29 @@ func TestCostAndHistoryCommands(t *testing.T) {
 		t.Fatalf("history command failed: %v", err)
 	}
 
-	if !strings.Contains(histBuf.String(), "call.m4a") || !strings.Contains(histBuf.String(), "$0.043") {
-		t.Errorf("expected history output to contain 'call.m4a' and '$0.043', got:\n%s", histBuf.String())
+	histStr := histBuf.String()
+	if !strings.Contains(histStr, "actual.m4a") || !strings.Contains(histStr, "$0.043") {
+		t.Errorf("expected history output to contain 'actual.m4a' and '$0.043', got:\n%s", histStr)
+	}
+	if !strings.Contains(histStr, "estimate.m4a") || !strings.Contains(histStr, "N/A yet") {
+		t.Errorf("expected history output to contain 'estimate.m4a' and 'N/A yet', got:\n%s", histStr)
 	}
 
+	// Test cost command on cached actual job -> displays cached value directly without API call
 	var costBuf bytes.Buffer
 	costCmd := newCostCmdWithDir(dir)
 	costCmd.SetOut(&costBuf)
-	costCmd.SetArgs([]string{"req-uuid-12345"})
+	costCmd.SetArgs([]string{"req-actual-123"})
 
 	if err := costCmd.Execute(); err != nil {
 		t.Fatalf("cost command failed: %v", err)
 	}
 
-	if !strings.Contains(costBuf.String(), "req-uuid-12345") || !strings.Contains(costBuf.String(), "$0.043") {
-		t.Errorf("expected cost output to contain request id and cost, got:\n%s", costBuf.String())
+	if !strings.Contains(costBuf.String(), "req-actual-123") || !strings.Contains(costBuf.String(), "$0.043 USD") {
+		t.Errorf("expected cost output to contain request id and cached cost, got:\n%s", costBuf.String())
 	}
 
+	// Test cache clear command
 	var cacheBuf bytes.Buffer
 	cacheCmd := newCacheCmdWithDir(dir)
 	cacheCmd.SetOut(&cacheBuf)
@@ -155,6 +180,76 @@ func TestCostAndHistoryCommands(t *testing.T) {
 
 	if !strings.Contains(cacheBuf.String(), "Cleared") {
 		t.Errorf("expected cache clear confirmation, got:\n%s", cacheBuf.String())
+	}
+}
+
+func TestHistoryCmdConcurrentCostFetch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/projects":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"projects":[{"project_id":"proj-hist"}]}`))
+		case "/v1/projects/proj-hist/requests/req-job-1":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"response":{"details":{"usd":0.09633}}}`))
+		case "/v1/projects/proj-hist/requests/req-job-2":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`null`)) // Pending / N/A
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+
+	rec1 := deepgram.JobRecord{
+		RequestID:       "req-job-1",
+		Filename:        "file1.m4a",
+		SHA256:          "sha111",
+		DurationSeconds: 1000.0,
+		CostUSD:         "$0.073",
+		CostIsActual:    false,
+	}
+
+	rec2 := deepgram.JobRecord{
+		RequestID:       "req-job-2",
+		Filename:        "file2.m4a",
+		SHA256:          "sha222",
+		DurationSeconds: 500.0,
+		CostUSD:         "$0.036",
+		CostIsActual:    false,
+	}
+
+	_ = deepgram.SaveJobRecord(dir, rec1)
+	_ = deepgram.SaveJobRecord(dir, rec2)
+
+	t.Setenv("DEEPGRAM_API_KEY", "test-key")
+
+	var outBuf bytes.Buffer
+	cmd := newHistoryCmdWithDirAndEndpoint(dir, server.URL)
+	cmd.SetOut(&outBuf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("history execution failed: %v", err)
+	}
+
+	outStr := outBuf.String()
+	if !strings.Contains(outStr, "$0.096") {
+		t.Errorf("expected fetched actual cost $0.096 in history, got:\n%s", outStr)
+	}
+	if !strings.Contains(outStr, "N/A yet") {
+		t.Errorf("expected N/A yet for pending job in history, got:\n%s", outStr)
+	}
+
+	// Verify that rec1 was updated in cache with CostIsActual: true
+	updatedRec1, err := deepgram.GetJobRecordBySHA(dir, "sha111")
+	if err != nil || updatedRec1 == nil {
+		t.Fatalf("failed to retrieve updated rec1 from cache: %v", err)
+	}
+	if !updatedRec1.CostIsActual || updatedRec1.CostUSD != "$0.096" {
+		t.Errorf("expected rec1 in cache to be updated to actual cost $0.096, got: %+v", updatedRec1)
 	}
 }
 
@@ -368,17 +463,8 @@ func TestRunTranscribeSuccessWithMockServer(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/v1/projects":
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"projects":[{"project_id":"proj-001"}]}`))
-		case "/v1/projects/proj-001/requests/mock-req-001":
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"response":{"details":{"usd":0.005}}}`))
-		default:
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(mockJSON))
-		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(mockJSON))
 	}))
 	defer server.Close()
 
@@ -423,29 +509,12 @@ func TestRunTranscribeSuccessWithMockServer(t *testing.T) {
 		t.Errorf("expected transcript in output file, got:\n%s", string(content))
 	}
 
-	if !strings.Contains(errBuf.String(), "(Actual API Cost: $0.005)") {
-		t.Errorf("expected stderr to contain Actual API Cost, got: %s", errBuf.String())
+	if !strings.Contains(errBuf.String(), "(Calculated API Cost: $0.001)") {
+		t.Errorf("expected stderr to contain Calculated API Cost, got: %s", errBuf.String())
 	}
 }
 
-func TestRunTranscribeFallbackCalculatedCostWithNote(t *testing.T) {
-	mockJSON := `{
-		"metadata": {
-			"request_id": "mock-req-fallback",
-			"duration": 60.0
-		},
-		"results": {
-			"utterances": [
-				{
-					"start": 0.0,
-					"end": 60.0,
-					"speaker": 0,
-					"transcript": "Fallback test transcript"
-				}
-			]
-		}
-	}`
-
+func TestCostCommandFallbackEstimatedCost(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -453,46 +522,41 @@ func TestRunTranscribeFallbackCalculatedCostWithNote(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(`{"projects":[{"project_id":"proj-fallback"}]}`))
 		case "/v1/projects/proj-fallback/requests/mock-req-fallback":
-			// Return null response to simulate logs disabled / unpopulated
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`null`))
+			w.Write([]byte(`null`)) // Pending / unpopulated
 		default:
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(mockJSON))
+			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	defer server.Close()
 
 	dir := t.TempDir()
-	audioFile := filepath.Join(dir, "interview.m4a")
-	outFile := filepath.Join(dir, "out", "transcript.md")
 
-	if err := os.WriteFile(audioFile, []byte("fake audio content"), 0644); err != nil {
-		t.Fatalf("failed to write audio file: %v", err)
+	rec := deepgram.JobRecord{
+		RequestID:       "mock-req-fallback",
+		Filename:        "interview.m4a",
+		SHA256:          "sha-fallback-123",
+		DurationSeconds: 60.0,
+		CostUSD:         "$0.011",
+		CostIsActual:    false,
 	}
 
+	_ = deepgram.SaveJobRecord(dir, rec)
+
+	t.Setenv("DEEPGRAM_API_KEY", "test-key")
+
 	var outBuf bytes.Buffer
-	var errBuf bytes.Buffer
-	cmd := NewRootCmdWithDirAndEndpoint(dir, server.URL)
+	cmd := newCostCmdWithDirAndEndpoint(dir, server.URL)
 	cmd.SetOut(&outBuf)
-	cmd.SetErr(&errBuf)
-	cmd.SetArgs([]string{
-		audioFile,
-		"--api-key", "test-key",
-		"--no-preprocess",
-		"-o", outFile,
-	})
+	cmd.SetArgs([]string{"mock-req-fallback"})
 
 	err := cmd.Execute()
 	if err != nil {
-		t.Fatalf("runTranscribe failed: %v", err)
+		t.Fatalf("cost command failed: %v", err)
 	}
 
-	if !strings.Contains(errBuf.String(), "(Calculated API Cost: $0.011)") {
-		t.Errorf("expected stderr to contain Calculated API Cost, got: %s", errBuf.String())
-	}
-
-	if !strings.Contains(errBuf.String(), "Note: Could not fetch true cost from Deepgram") || !strings.Contains(errBuf.String(), "https://console.deepgram.com") {
-		t.Errorf("expected stderr to contain note with console link, got: %s", errBuf.String())
+	outStr := outBuf.String()
+	if !strings.Contains(outStr, "N/A yet (Estimated: $0.011 USD)") {
+		t.Errorf("expected cost output to contain 'N/A yet (Estimated: $0.011 USD)', got:\n%s", outStr)
 	}
 }

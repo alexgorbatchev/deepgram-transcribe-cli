@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -104,8 +105,8 @@ Default transcription output goes to stdout:
 	// Add Subcommands
 	rootCmd.AddCommand(
 		transcribeSubCmd,
-		newCostCmdWithDir(cacheDir),
-		newHistoryCmdWithDir(cacheDir),
+		newCostCmdWithDirAndEndpoint(cacheDir, overrideEndpoint),
+		newHistoryCmdWithDirAndEndpoint(cacheDir, overrideEndpoint),
 		newCacheCmdWithDir(cacheDir),
 	)
 
@@ -113,6 +114,10 @@ Default transcription output goes to stdout:
 }
 
 func newCostCmdWithDir(cacheDir string) *cobra.Command {
+	return newCostCmdWithDirAndEndpoint(cacheDir, "")
+}
+
+func newCostCmdWithDirAndEndpoint(cacheDir, overrideEndpoint string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "cost <audio-file|request-id>",
 		Short: "Display post-transcription cost & metadata for an audio file or Request ID",
@@ -123,6 +128,24 @@ func newCostCmdWithDir(cacheDir string) *cobra.Command {
 			record, err := deepgram.FindJobRecordByTarget(cacheDir, target)
 			if err != nil || record == nil {
 				return fmt.Errorf("no transcription job found for %q", target)
+			}
+
+			// If actual cost is not cached yet, attempt to fetch it from Deepgram API
+			if !record.CostIsActual && record.RequestID != "" {
+				apiKey := os.Getenv("DEEPGRAM_API_KEY")
+				if apiKey != "" {
+					var clientOpts []deepgram.ClientOption
+					if overrideEndpoint != "" {
+						clientOpts = append(clientOpts, deepgram.WithEndpoint(overrideEndpoint))
+					}
+					client := deepgram.NewClient(apiKey, clientOpts...)
+					actualCost, err := client.GetRequestCostFormatted(cmd.Context(), record.RequestID)
+					if err == nil && actualCost != "" {
+						record.CostUSD = actualCost
+						record.CostIsActual = true
+						_ = deepgram.SaveJobRecord(cacheDir, *record)
+					}
+				}
 			}
 
 			out := cmd.OutOrStdout()
@@ -139,7 +162,12 @@ func newCostCmdWithDir(cacheDir string) *cobra.Command {
 			fmt.Fprintf(out, "Processed Audio:  %s (%.1fs) | %d Channel(s) | Preprocessed: %t\n",
 				deepgram.FormatSeconds(record.DurationSeconds), record.DurationSeconds, record.Channels, record.Preprocessed)
 			fmt.Fprintf(out, "Model:            %s\n", record.Model)
-			fmt.Fprintf(out, "Cost:             %s USD\n", record.CostUSD)
+
+			if record.CostIsActual {
+				fmt.Fprintf(out, "Cost:             %s USD\n", record.CostUSD)
+			} else {
+				fmt.Fprintf(out, "Cost:             N/A yet (Estimated: %s USD)\n", record.CostUSD)
+			}
 
 			return nil
 		},
@@ -147,6 +175,10 @@ func newCostCmdWithDir(cacheDir string) *cobra.Command {
 }
 
 func newHistoryCmdWithDir(cacheDir string) *cobra.Command {
+	return newHistoryCmdWithDirAndEndpoint(cacheDir, "")
+}
+
+func newHistoryCmdWithDirAndEndpoint(cacheDir, overrideEndpoint string) *cobra.Command {
 	var limitHistory int
 
 	cmd := &cobra.Command{
@@ -168,8 +200,50 @@ func newHistoryCmdWithDir(cacheDir string) *cobra.Command {
 				records = records[:limitHistory]
 			}
 
+			// Fire off concurrent requests to fetch true costs for records missing actual costs
+			apiKey := os.Getenv("DEEPGRAM_API_KEY")
+			if apiKey != "" {
+				var clientOpts []deepgram.ClientOption
+				if overrideEndpoint != "" {
+					clientOpts = append(clientOpts, deepgram.WithEndpoint(overrideEndpoint))
+				}
+				client := deepgram.NewClient(apiKey, clientOpts...)
+
+				type costResult struct {
+					index      int
+					actualCost string
+					err        error
+				}
+
+				var wg sync.WaitGroup
+				resultsChan := make(chan costResult, len(records))
+
+				for i, rec := range records {
+					if !rec.CostIsActual && rec.RequestID != "" {
+						wg.Add(1)
+						go func(idx int, reqID string) {
+							defer wg.Done()
+							cost, err := client.GetRequestCostFormatted(cmd.Context(), reqID)
+							resultsChan <- costResult{index: idx, actualCost: cost, err: err}
+						}(i, rec.RequestID)
+					}
+				}
+
+				wg.Wait()
+				close(resultsChan)
+
+				for res := range resultsChan {
+					if res.err == nil && res.actualCost != "" {
+						records[res.index].CostUSD = res.actualCost
+						records[res.index].CostIsActual = true
+						_ = deepgram.SaveJobRecord(cacheDir, records[res.index])
+					}
+				}
+			}
+
 			var totalDurationSecs float64
 			var totalCostFloat float64
+			var actualCount int
 
 			fmt.Fprintf(out, "%-12s  %-20s  %-10s  %-8s  %-8s  %-10s  %s\n",
 				"DATE", "FILE", "DURATION", "CHANNELS", "MODEL", "COST", "REQUEST ID")
@@ -188,20 +262,35 @@ func newHistoryCmdWithDir(cacheDir string) *cobra.Command {
 
 				durStr := deepgram.FormatSeconds(rec.DurationSeconds)
 
+				costDisplay := "N/A yet"
+				if rec.CostIsActual {
+					actualCount++
+					costDisplay = rec.CostUSD
+					costClean := strings.TrimPrefix(rec.CostUSD, "$")
+					if val, err := strconv.ParseFloat(costClean, 64); err == nil {
+						totalCostFloat += val
+					}
+				}
+
 				fmt.Fprintf(out, "%-12s  %-20s  %-10s  %-8d  %-8s  %-10s  %s\n",
-					dateStr, fn, durStr, rec.Channels, rec.Model, rec.CostUSD, rec.RequestID)
+					dateStr, fn, durStr, rec.Channels, rec.Model, costDisplay, rec.RequestID)
 
 				totalDurationSecs += rec.DurationSeconds
-
-				costClean := strings.TrimPrefix(rec.CostUSD, "$")
-				if val, err := strconv.ParseFloat(costClean, 64); err == nil {
-					totalCostFloat += val
-				}
 			}
 
 			fmt.Fprintf(out, "%s\n", strings.Repeat("-", 85))
-			fmt.Fprintf(out, "TOTAL USAGE: %d call(s) | Total Duration: %s | Total Billed: $%.3f USD\n",
-				len(records), deepgram.FormatSeconds(totalDurationSecs), totalCostFloat)
+
+			var billedStr string
+			if actualCount == len(records) {
+				billedStr = fmt.Sprintf("Total Billed: $%.3f USD", totalCostFloat)
+			} else if actualCount > 0 {
+				billedStr = fmt.Sprintf("Total Billed (%d/%d calls): $%.3f USD", actualCount, len(records), totalCostFloat)
+			} else {
+				billedStr = "Total Billed: N/A"
+			}
+
+			fmt.Fprintf(out, "TOTAL USAGE: %d call(s) | Total Duration: %s | %s\n",
+				len(records), deepgram.FormatSeconds(totalDurationSecs), billedStr)
 
 			return nil
 		},
@@ -418,20 +507,6 @@ func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoi
 	}
 	costUSD := deepgram.CalculateCostWithOptions(durationSecs, channels, dgOpts)
 
-	// Attempt to query Deepgram for actual cost from request logs
-	finalCostUSD := costUSD
-	isActualCost := false
-	var trueCostErr error
-
-	if resp != nil && resp.Metadata.RequestID != "" && client != nil {
-		var actualCost string
-		actualCost, trueCostErr = client.GetRequestCostFormatted(cmd.Context(), resp.Metadata.RequestID)
-		if trueCostErr == nil && actualCost != "" {
-			finalCostUSD = actualCost
-			isActualCost = true
-		}
-	}
-
 	// Persist JobRecord metadata
 	if !opts.noCache {
 		absPath, _ := filepath.Abs(audioPath)
@@ -447,7 +522,8 @@ func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoi
 			Model:           opts.model,
 			Preprocessed:    doMono || doTrimSilence,
 			Terms:           combinedTerms,
-			CostUSD:         finalCostUSD,
+			CostUSD:         costUSD,
+			CostIsActual:    false,
 		}
 		_ = deepgram.SaveJobRecord(cacheDir, jobRec)
 	}
@@ -482,15 +558,10 @@ func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoi
 	}
 
 	if opts.outputFile != "" {
-		if isActualCost {
-			cmd.PrintErrf("Successfully saved transcript to %s (Actual API Cost: %s)\n", opts.outputFile, finalCostUSD)
-		} else {
-			cmd.PrintErrf("Successfully saved transcript to %s (Calculated API Cost: %s)\n", opts.outputFile, finalCostUSD)
-			if trueCostErr != nil {
-				cmd.PrintErrf("Note: Could not fetch true cost from Deepgram (%v). To view true costs, ensure request logging is enabled under Project Settings in the Deepgram Console (https://console.deepgram.com) and your API key has Member/Admin scope.\n", trueCostErr)
-			}
-		}
+		cmd.PrintErrf("Successfully saved transcript to %s (Calculated API Cost: %s)\n", opts.outputFile, costUSD)
 	}
+
+	return nil
 
 	return nil
 }

@@ -62,6 +62,7 @@ type JobRecord struct {
 	Preprocessed    bool      `json:"preprocessed"`
 	Terms           []string  `json:"terms,omitempty"`
 	CostUSD         string    `json:"cost_usd"`
+	CostIsActual    bool      `json:"cost_is_actual,omitempty"`
 }
 
 // JobRecordEnvelope wraps the job record metadata and raw Deepgram response inside cache files.
