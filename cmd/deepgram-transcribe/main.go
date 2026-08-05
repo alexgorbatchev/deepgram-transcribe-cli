@@ -23,8 +23,9 @@ import (
 var (
 	// version is populated at compile time by GoReleaser via ldflags (-X main.version={{.Version}})
 	version = "dev"
+)
 
-	// Flag variables
+type transcribeOptions struct {
 	extraTerms       []string
 	termsFilePath    string
 	model            string
@@ -40,10 +41,15 @@ var (
 	noTrimSilence    bool
 	silenceThreshold string
 	silenceDuration  string
-	limitHistory     int
-)
+}
 
 func NewRootCmd() *cobra.Command {
+	return NewRootCmdWithDirAndEndpoint(deepgram.DefaultCacheDir(), "")
+}
+
+func NewRootCmdWithDirAndEndpoint(cacheDir, overrideEndpoint string) *cobra.Command {
+	opts := &transcribeOptions{}
+
 	rootCmd := &cobra.Command{
 		Use:     "deepgram-transcribe [command|flags] <audio-file>",
 		Short:   "Transcribe audio phone conversations using Deepgram and output Markdown",
@@ -61,28 +67,28 @@ Default transcription output goes to stdout:
   deepgram-transcribe -t Envoy -t Alex conversation.mp3 -o output.md`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runTranscribeWithEndpoint(cmd, args, "", deepgram.DefaultCacheDir())
+			return runTranscribeWithEndpoint(cmd, args, overrideEndpoint, cacheDir, opts)
 		},
 	}
 
 	flags := rootCmd.Flags()
-	flags.StringArrayVarP(&extraTerms, "term", "t", nil, "Additional terms to boost recognition (company names, people names, etc., can be used multiple times or comma-separated)")
-	flags.StringVar(&termsFilePath, "terms-file", "", "Path to a text file containing additional terms (one per line or comma-separated)")
-	flags.StringVarP(&model, "model", "m", "nova-3", "Deepgram transcription model (e.g. nova-3, nova-2, flux)")
-	flags.StringVarP(&language, "language", "l", "en", "Audio language code (e.g. en, en-US)")
-	flags.StringVarP(&outputFile, "output", "o", "", "Output file path (default stdout)")
-	flags.StringVar(&apiKey, "api-key", "", "Deepgram API key (defaults to DEEPGRAM_API_KEY environment variable)")
-	flags.BoolVar(&noDiarize, "no-diarize", false, "Disable speaker diarization")
-	flags.BoolVar(&noTechTerms, "no-tech-terms", false, "Disable preconfigured common tech interview terms")
-	flags.BoolVar(&noCache, "no-cache", false, "Bypass local SHA-256 transcript response cache")
-	flags.BoolVarP(&force, "force", "f", false, "Force fresh Deepgram re-transcription even if cached source audio exists with different terms")
+	flags.StringArrayVarP(&opts.extraTerms, "term", "t", nil, "Additional terms to boost recognition (company names, people names, etc., can be used multiple times or comma-separated)")
+	flags.StringVar(&opts.termsFilePath, "terms-file", "", "Path to a text file containing additional terms (one per line or comma-separated)")
+	flags.StringVarP(&opts.model, "model", "m", "nova-3", "Deepgram transcription model (e.g. nova-3, nova-2, flux)")
+	flags.StringVarP(&opts.language, "language", "l", "en", "Audio language code (e.g. en, en-US)")
+	flags.StringVarP(&opts.outputFile, "output", "o", "", "Output file path (default stdout)")
+	flags.StringVar(&opts.apiKey, "api-key", "", "Deepgram API key (defaults to DEEPGRAM_API_KEY environment variable)")
+	flags.BoolVar(&opts.noDiarize, "no-diarize", false, "Disable speaker diarization")
+	flags.BoolVar(&opts.noTechTerms, "no-tech-terms", false, "Disable preconfigured common tech interview terms")
+	flags.BoolVar(&opts.noCache, "no-cache", false, "Bypass local SHA-256 transcript response cache")
+	flags.BoolVarP(&opts.force, "force", "f", false, "Force fresh Deepgram re-transcription even if cached source audio exists with different terms")
 
 	// Cost reduction preprocessing flags (ON by default)
-	flags.BoolVar(&noPreprocess, "no-preprocess", false, "Disable automatic audio preprocessing (mono conversion & silence trimming)")
-	flags.BoolVar(&noMono, "no-mono", false, "Disable stereo-to-mono downmixing")
-	flags.BoolVar(&noTrimSilence, "no-trim-silence", false, "Disable silence/dead-air trimming")
-	flags.StringVar(&silenceThreshold, "silence-threshold", "-30dB", "Noise threshold for silence removal (e.g. -30dB, -40dB)")
-	flags.StringVar(&silenceDuration, "silence-duration", "2.0", "Minimum silence duration in seconds to trim (e.g. 2.0)")
+	flags.BoolVar(&opts.noPreprocess, "no-preprocess", false, "Disable automatic audio preprocessing (mono conversion & silence trimming)")
+	flags.BoolVar(&opts.noMono, "no-mono", false, "Disable stereo-to-mono downmixing")
+	flags.BoolVar(&opts.noTrimSilence, "no-trim-silence", false, "Disable silence/dead-air trimming")
+	flags.StringVar(&opts.silenceThreshold, "silence-threshold", audio.DefaultSilenceThreshold, "Noise threshold for silence removal (e.g. -30dB, -40dB)")
+	flags.StringVar(&opts.silenceDuration, "silence-duration", audio.DefaultSilenceDuration, "Minimum silence duration in seconds to trim (e.g. 2.0)")
 
 	// Subcommand alias for 'deepgram-transcribe transcribe <file>'
 	transcribeSubCmd := &cobra.Command{
@@ -90,7 +96,7 @@ Default transcription output goes to stdout:
 		Short: "Transcribe audio file (alias for root command)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runTranscribeWithEndpoint(cmd, args, "", deepgram.DefaultCacheDir())
+			return runTranscribeWithEndpoint(cmd, args, overrideEndpoint, cacheDir, opts)
 		},
 	}
 	transcribeSubCmd.Flags().AddFlagSet(flags)
@@ -98,9 +104,9 @@ Default transcription output goes to stdout:
 	// Add Subcommands
 	rootCmd.AddCommand(
 		transcribeSubCmd,
-		newCostCmdWithDir(deepgram.DefaultCacheDir()),
-		newHistoryCmdWithDir(deepgram.DefaultCacheDir()),
-		newCacheCmdWithDir(deepgram.DefaultCacheDir()),
+		newCostCmdWithDir(cacheDir),
+		newHistoryCmdWithDir(cacheDir),
+		newCacheCmdWithDir(cacheDir),
 	)
 
 	return rootCmd
@@ -114,32 +120,7 @@ func newCostCmdWithDir(cacheDir string) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := args[0]
 
-			var record *deepgram.JobRecord
-			var err error
-
-			// 1. Try matching as an existing local audio file (SHA-256 lookup)
-			if _, statErr := os.Stat(target); statErr == nil {
-				audioBytes, readErr := os.ReadFile(target)
-				if readErr == nil {
-					records, listErr := deepgram.ListJobRecords(cacheDir)
-					if listErr == nil {
-						rawSHA := deepgram.SourceAudioKey(audioBytes)
-						for _, rec := range records {
-							if rec.SourceSHA256 == rawSHA || rec.SHA256 == rawSHA || strings.HasPrefix(rec.SHA256, rawSHA[:16]) || filepath.Base(rec.FilePath) == filepath.Base(target) {
-								r := rec
-								record = &r
-								break
-							}
-						}
-					}
-				}
-			}
-
-			// 2. If not found by file SHA/name, try matching by Request ID
-			if record == nil {
-				record, err = deepgram.GetJobRecordByRequestID(cacheDir, target)
-			}
-
+			record, err := deepgram.FindJobRecordByTarget(cacheDir, target)
 			if err != nil || record == nil {
 				return fmt.Errorf("no transcription job found for %q", target)
 			}
@@ -158,7 +139,7 @@ func newCostCmdWithDir(cacheDir string) *cobra.Command {
 			fmt.Fprintf(out, "Processed Audio:  %s (%.1fs) | %d Channel(s) | Preprocessed: %t\n",
 				deepgram.FormatSeconds(record.DurationSeconds), record.DurationSeconds, record.Channels, record.Preprocessed)
 			fmt.Fprintf(out, "Model:            %s\n", record.Model)
-			fmt.Fprintf(out, "Calculated Cost:  %s USD\n", record.CostUSD)
+			fmt.Fprintf(out, "Cost:             %s USD\n", record.CostUSD)
 
 			return nil
 		},
@@ -166,6 +147,8 @@ func newCostCmdWithDir(cacheDir string) *cobra.Command {
 }
 
 func newHistoryCmdWithDir(cacheDir string) *cobra.Command {
+	var limitHistory int
+
 	cmd := &cobra.Command{
 		Use:   "history",
 		Short: "List recent transcription jobs and total cumulative spending",
@@ -268,7 +251,11 @@ func newCacheCmdWithDir(cacheDir string) *cobra.Command {
 	return cacheCmd
 }
 
-func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoint, cacheDir string) error {
+func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoint, cacheDir string, opts *transcribeOptions) error {
+	if opts == nil {
+		opts = &transcribeOptions{}
+	}
+
 	audioPath := args[0]
 
 	fileInfo, err := os.Stat(audioPath)
@@ -285,17 +272,17 @@ func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoi
 	// Build term list & options
 	var termLists [][]string
 
-	if !noTechTerms {
+	if !opts.noTechTerms {
 		termLists = append(termLists, terms.DefaultTechTerms())
 	}
 
-	if len(extraTerms) > 0 {
-		parsedExtra := terms.ParseCustomTerms(extraTerms)
+	if len(opts.extraTerms) > 0 {
+		parsedExtra := terms.ParseCustomTerms(opts.extraTerms)
 		termLists = append(termLists, parsedExtra)
 	}
 
-	if termsFilePath != "" {
-		fileTerms, err := terms.LoadTermsFromFile(termsFilePath)
+	if opts.termsFilePath != "" {
+		fileTerms, err := terms.LoadTermsFromFile(opts.termsFilePath)
 		if err != nil {
 			return fmt.Errorf("loading terms file: %w", err)
 		}
@@ -304,12 +291,12 @@ func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoi
 
 	combinedTerms := terms.CombineTerms(termLists...)
 
-	mimeType := detectMIMEType(audioPath)
+	mimeType := audio.DetectMIMEType(audioPath)
 
-	opts := deepgram.Options{
-		Model:           model,
-		Language:        language,
-		Diarize:         !noDiarize,
+	dgOpts := deepgram.Options{
+		Model:           opts.model,
+		Language:        opts.language,
+		Diarize:         !opts.noDiarize,
 		SmartFormatting: true,
 		Utterances:      true,
 		Punctuate:       true,
@@ -317,12 +304,12 @@ func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoi
 	}
 
 	sourceSHA := deepgram.SourceAudioKey(originalAudioBytes)
-	optsKey := deepgram.CacheKey(originalAudioBytes, opts)
+	optsKey := deepgram.CacheKey(originalAudioBytes, dgOpts)
 
 	var resp *deepgram.PreRecordedResponse
 
 	// CHECK CACHE FIRST BEFORE RUNNING FFMPEG OR MAKING API CALLS
-	if !noCache && !force {
+	if !opts.noCache && !opts.force {
 		// 1. Exact options match
 		cachedResp, err := deepgram.GetCachedResponse(cacheDir, optsKey)
 		if err == nil && cachedResp != nil {
@@ -346,8 +333,8 @@ func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoi
 	}
 
 	ctx := context.Background()
-	doMono := !noPreprocess && !noMono
-	doTrimSilence := !noPreprocess && !noTrimSilence
+	doMono := !opts.noPreprocess && !opts.noMono
+	doTrimSilence := !opts.noPreprocess && !opts.noTrimSilence
 
 	// Run audio preprocessing ONLY on cache MISS (or if --force is set)
 	targetAudioPath := audioPath
@@ -359,8 +346,8 @@ func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoi
 			prepOpts := audio.PreprocessOptions{
 				Mono:             doMono,
 				TrimSilence:      doTrimSilence,
-				SilenceThreshold: silenceThreshold,
-				SilenceDuration:  silenceDuration,
+				SilenceThreshold: opts.silenceThreshold,
+				SilenceDuration:  opts.silenceDuration,
 			}
 
 			procPath, cleanup, err := audio.PreprocessAudio(ctx, audioPath, prepOpts)
@@ -379,13 +366,23 @@ func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoi
 		}
 	}
 
+	// Resolve API Key
+	resolvedAPIKey := opts.apiKey
+	if resolvedAPIKey == "" {
+		resolvedAPIKey = os.Getenv("DEEPGRAM_API_KEY")
+	}
+
+	var client *deepgram.Client
+	if resolvedAPIKey != "" {
+		var clientOpts []deepgram.ClientOption
+		if overrideEndpoint != "" {
+			clientOpts = append(clientOpts, deepgram.WithEndpoint(overrideEndpoint))
+		}
+		client = deepgram.NewClient(resolvedAPIKey, clientOpts...)
+	}
+
 	// If not cached or --force was passed, call Deepgram API
 	if resp == nil {
-		// Resolve API Key
-		resolvedAPIKey := apiKey
-		if resolvedAPIKey == "" {
-			resolvedAPIKey = os.Getenv("DEEPGRAM_API_KEY")
-		}
 		if resolvedAPIKey == "" {
 			return fmt.Errorf("DEEPGRAM_API_KEY environment variable is not set and --api-key was not provided")
 		}
@@ -396,28 +393,21 @@ func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoi
 		}
 
 		cmd.PrintErrf("Transcribing %s (%s, model: %s, terms: %d)...\n",
-			filepath.Base(audioPath), formatFileSize(fileInfo.Size()), model, len(combinedTerms))
+			filepath.Base(audioPath), formatFileSize(fileInfo.Size()), opts.model, len(combinedTerms))
 
-		var clientOpts []deepgram.ClientOption
-		if overrideEndpoint != "" {
-			clientOpts = append(clientOpts, deepgram.WithEndpoint(overrideEndpoint))
-		}
-
-		client := deepgram.NewClient(resolvedAPIKey, clientOpts...)
-
-		apiResp, err := client.Transcribe(ctx, bytes.NewReader(transmitBytes), mimeType, opts)
+		apiResp, err := client.Transcribe(ctx, bytes.NewReader(transmitBytes), mimeType, dgOpts)
 		if err != nil {
 			return fmt.Errorf("transcription failed: %w", err)
 		}
 		resp = apiResp
 
 		// Save to cache
-		if !noCache {
+		if !opts.noCache {
 			_ = deepgram.SaveCachedResponse(cacheDir, optsKey, resp)
 		}
 	}
 
-	// Calculate actual cost
+	// Calculate cost estimate
 	channels := 1
 	if !doMono {
 		channels = 2
@@ -426,10 +416,24 @@ func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoi
 	if resp != nil && resp.Metadata.Duration > 0 {
 		durationSecs = resp.Metadata.Duration
 	}
-	costUSD := fmt.Sprintf("$%.3f", (durationSecs/60.0)*float64(channels)*0.0043)
+	costUSD := deepgram.CalculateCostWithOptions(durationSecs, channels, dgOpts)
+
+	// Attempt to query Deepgram for actual cost from request logs
+	finalCostUSD := costUSD
+	isActualCost := false
+	var trueCostErr error
+
+	if resp != nil && resp.Metadata.RequestID != "" && client != nil {
+		var actualCost string
+		actualCost, trueCostErr = client.GetRequestCostFormatted(cmd.Context(), resp.Metadata.RequestID)
+		if trueCostErr == nil && actualCost != "" {
+			finalCostUSD = actualCost
+			isActualCost = true
+		}
+	}
 
 	// Persist JobRecord metadata
-	if !noCache {
+	if !opts.noCache {
 		absPath, _ := filepath.Abs(audioPath)
 		jobRec := deepgram.JobRecord{
 			RequestID:       resp.Metadata.RequestID,
@@ -440,10 +444,10 @@ func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoi
 			Timestamp:       time.Now(),
 			DurationSeconds: durationSecs,
 			Channels:        channels,
-			Model:           model,
+			Model:           opts.model,
 			Preprocessed:    doMono || doTrimSilence,
 			Terms:           combinedTerms,
-			CostUSD:         costUSD,
+			CostUSD:         finalCostUSD,
 		}
 		_ = deepgram.SaveJobRecord(cacheDir, jobRec)
 	}
@@ -451,8 +455,8 @@ func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoi
 	meta := markdown.MetaInfo{
 		Filename:  filepath.Base(audioPath),
 		FileSize:  formatFileSize(fileInfo.Size()),
-		Model:     model,
-		Diarized:  !noDiarize,
+		Model:     opts.model,
+		Diarized:  !opts.noDiarize,
 		KeyTerms:  combinedTerms,
 		Timestamp: time.Now(),
 	}
@@ -460,16 +464,13 @@ func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoi
 	mdContent := markdown.Format(resp, meta)
 
 	var outWriter io.Writer = cmd.OutOrStdout()
-	if outputFile != "" {
-		outDir := filepath.Dir(outputFile)
-		if outDir != "." && outDir != "" {
-			if err := os.MkdirAll(outDir, 0755); err != nil {
-				return fmt.Errorf("creating output directory %q: %w", outDir, err)
-			}
+	if opts.outputFile != "" {
+		if err := os.MkdirAll(filepath.Dir(opts.outputFile), 0755); err != nil {
+			return fmt.Errorf("creating output directory for %q: %w", opts.outputFile, err)
 		}
-		outFile, err := os.Create(outputFile)
+		outFile, err := os.Create(opts.outputFile)
 		if err != nil {
-			return fmt.Errorf("creating output file %q: %w", outputFile, err)
+			return fmt.Errorf("creating output file %q: %w", opts.outputFile, err)
 		}
 		defer outFile.Close()
 		outWriter = outFile
@@ -480,8 +481,15 @@ func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoi
 		return fmt.Errorf("writing output: %w", err)
 	}
 
-	if outputFile != "" {
-		cmd.PrintErrf("Successfully saved transcript to %s (Calculated API Cost: %s)\n", outputFile, costUSD)
+	if opts.outputFile != "" {
+		if isActualCost {
+			cmd.PrintErrf("Successfully saved transcript to %s (Actual API Cost: %s)\n", opts.outputFile, finalCostUSD)
+		} else {
+			cmd.PrintErrf("Successfully saved transcript to %s (Calculated API Cost: %s)\n", opts.outputFile, finalCostUSD)
+			if trueCostErr != nil {
+				cmd.PrintErrf("Note: Could not fetch true cost from Deepgram (%v). To view true costs, ensure request logging is enabled under Project Settings in the Deepgram Console (https://console.deepgram.com) and your API key has Member/Admin scope.\n", trueCostErr)
+			}
+		}
 	}
 
 	return nil
@@ -498,28 +506,6 @@ func formatTermsSummary(termList []string) string {
 		return fmt.Sprintf("%s ... (+%d more)", strings.Join(s[:10], ", "), len(s)-10)
 	}
 	return strings.Join(s, ", ")
-}
-
-func detectMIMEType(path string) string {
-	ext := strings.ToLower(filepath.Ext(path))
-	switch ext {
-	case ".mp3":
-		return "audio/mpeg"
-	case ".m4a":
-		return "audio/m4a"
-	case ".mp4":
-		return "audio/mp4"
-	case ".wav":
-		return "audio/wav"
-	case ".ogg":
-		return "audio/ogg"
-	case ".flac":
-		return "audio/flac"
-	case ".aac":
-		return "audio/aac"
-	default:
-		return "application/octet-stream"
-	}
 }
 
 func formatFileSize(bytes int64) string {

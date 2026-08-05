@@ -10,8 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spf13/cobra"
-
+	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/audio"
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/deepgram"
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/terms"
 )
@@ -32,9 +31,9 @@ func TestDetectMIMEType(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := detectMIMEType(tt.filename)
+		got := audio.DetectMIMEType(tt.filename)
 		if got != tt.want {
-			t.Errorf("detectMIMEType(%q) = %q, want %q", tt.filename, got, tt.want)
+			t.Errorf("DetectMIMEType(%q) = %q, want %q", tt.filename, got, tt.want)
 		}
 	}
 }
@@ -200,17 +199,12 @@ func TestRunTranscribeCacheFirstSkipsPreprocessing(t *testing.T) {
 	var errBuf bytes.Buffer
 	var outBuf bytes.Buffer
 
-	cmd := NewRootCmd()
+	cmd := NewRootCmdWithDirAndEndpoint(dir, "")
 	cmd.SetOut(&outBuf)
 	cmd.SetErr(&errBuf)
 	cmd.SetArgs([]string{audioFile, "--no-preprocess"})
 
 	os.Unsetenv("DEEPGRAM_API_KEY")
-
-	customRunner := func(cmd *cobra.Command, args []string) error {
-		return runTranscribeWithEndpoint(cmd, args, "", dir)
-	}
-	cmd.RunE = customRunner
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("expected cache hit success, got error: %v", err)
@@ -266,17 +260,12 @@ func TestRunTranscribeSourceAudioMatchTermDiff(t *testing.T) {
 	var errBuf bytes.Buffer
 	var outBuf bytes.Buffer
 
-	cmd := NewRootCmd()
+	cmd := NewRootCmdWithDirAndEndpoint(dir, "")
 	cmd.SetOut(&outBuf)
 	cmd.SetErr(&errBuf)
 	cmd.SetArgs([]string{audioFile, "-t", "Harvey", "-t", "Brian", "--no-preprocess"})
 
 	os.Unsetenv("DEEPGRAM_API_KEY")
-
-	customRunner := func(cmd *cobra.Command, args []string) error {
-		return runTranscribeWithEndpoint(cmd, args, "", dir)
-	}
-	cmd.RunE = customRunner
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("expected source match success, got error: %v", err)
@@ -346,14 +335,9 @@ func TestRunTranscribeForceFlagBypassesCache(t *testing.T) {
 	defer server.Close()
 
 	var outBuf bytes.Buffer
-	cmd := NewRootCmd()
+	cmd := NewRootCmdWithDirAndEndpoint(dir, server.URL)
 	cmd.SetOut(&outBuf)
 	cmd.SetArgs([]string{audioFile, "--force", "--api-key", "test-key", "--no-preprocess"})
-
-	customRunner := func(cmd *cobra.Command, args []string) error {
-		return runTranscribeWithEndpoint(cmd, args, server.URL, dir)
-	}
-	cmd.RunE = customRunner
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("expected force re-transcribe success, got error: %v", err)
@@ -384,8 +368,17 @@ func TestRunTranscribeSuccessWithMockServer(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(mockJSON))
+		switch r.URL.Path {
+		case "/v1/projects":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"projects":[{"project_id":"proj-001"}]}`))
+		case "/v1/projects/proj-001/requests/mock-req-001":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"response":{"details":{"usd":0.005}}}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(mockJSON))
+		}
 	}))
 	defer server.Close()
 
@@ -403,8 +396,10 @@ func TestRunTranscribeSuccessWithMockServer(t *testing.T) {
 	}
 
 	var outBuf bytes.Buffer
-	cmd := NewRootCmd()
+	var errBuf bytes.Buffer
+	cmd := NewRootCmdWithDirAndEndpoint(dir, server.URL)
 	cmd.SetOut(&outBuf)
+	cmd.SetErr(&errBuf)
 	cmd.SetArgs([]string{
 		audioFile,
 		"--api-key", "test-key",
@@ -413,11 +408,6 @@ func TestRunTranscribeSuccessWithMockServer(t *testing.T) {
 		"--no-preprocess",
 		"-o", outFile,
 	})
-
-	customRunner := func(cmd *cobra.Command, args []string) error {
-		return runTranscribeWithEndpoint(cmd, args, server.URL, dir)
-	}
-	cmd.RunE = customRunner
 
 	err := cmd.Execute()
 	if err != nil {
@@ -431,5 +421,78 @@ func TestRunTranscribeSuccessWithMockServer(t *testing.T) {
 
 	if !strings.Contains(string(content), "Hello world from Deepgram") {
 		t.Errorf("expected transcript in output file, got:\n%s", string(content))
+	}
+
+	if !strings.Contains(errBuf.String(), "(Actual API Cost: $0.005)") {
+		t.Errorf("expected stderr to contain Actual API Cost, got: %s", errBuf.String())
+	}
+}
+
+func TestRunTranscribeFallbackCalculatedCostWithNote(t *testing.T) {
+	mockJSON := `{
+		"metadata": {
+			"request_id": "mock-req-fallback",
+			"duration": 60.0
+		},
+		"results": {
+			"utterances": [
+				{
+					"start": 0.0,
+					"end": 60.0,
+					"speaker": 0,
+					"transcript": "Fallback test transcript"
+				}
+			]
+		}
+	}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/projects":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"projects":[{"project_id":"proj-fallback"}]}`))
+		case "/v1/projects/proj-fallback/requests/mock-req-fallback":
+			// Return null response to simulate logs disabled / unpopulated
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`null`))
+		default:
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(mockJSON))
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	audioFile := filepath.Join(dir, "interview.m4a")
+	outFile := filepath.Join(dir, "out", "transcript.md")
+
+	if err := os.WriteFile(audioFile, []byte("fake audio content"), 0644); err != nil {
+		t.Fatalf("failed to write audio file: %v", err)
+	}
+
+	var outBuf bytes.Buffer
+	var errBuf bytes.Buffer
+	cmd := NewRootCmdWithDirAndEndpoint(dir, server.URL)
+	cmd.SetOut(&outBuf)
+	cmd.SetErr(&errBuf)
+	cmd.SetArgs([]string{
+		audioFile,
+		"--api-key", "test-key",
+		"--no-preprocess",
+		"-o", outFile,
+	})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("runTranscribe failed: %v", err)
+	}
+
+	if !strings.Contains(errBuf.String(), "(Calculated API Cost: $0.011)") {
+		t.Errorf("expected stderr to contain Calculated API Cost, got: %s", errBuf.String())
+	}
+
+	if !strings.Contains(errBuf.String(), "Note: Could not fetch true cost from Deepgram") || !strings.Contains(errBuf.String(), "https://console.deepgram.com") {
+		t.Errorf("expected stderr to contain note with console link, got: %s", errBuf.String())
 	}
 }
