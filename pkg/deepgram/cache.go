@@ -71,15 +71,16 @@ func CacheKey(audioData []byte, opts Options) string {
 
 // GetCachedResponse attempts to load a previously saved Deepgram response from cacheDir.
 func GetCachedResponse(cacheDir, key string) (*PreRecordedResponse, error) {
+	env, err := GetJobEnvelope(cacheDir, key)
+	if err == nil && env.Response != nil {
+		return env.Response, nil
+	}
+
+	// Fallback for raw PreRecordedResponse JSON files (e.g. unwrapped response dumps or test fixtures)
 	cachePath := filepath.Join(cacheDir, key+".json")
 	data, err := os.ReadFile(cachePath)
 	if err != nil {
 		return nil, fmt.Errorf("reading cache file %q: %w", cachePath, err)
-	}
-
-	var env JobRecordEnvelope
-	if err := json.Unmarshal(data, &env); err == nil && env.Response != nil {
-		return env.Response, nil
 	}
 
 	var resp PreRecordedResponse
@@ -106,21 +107,16 @@ func FindCachedJobBySourceSHA(cacheDir, sourceSHA string) (*JobRecordEnvelope, e
 			continue
 		}
 
-		filePath := filepath.Join(cacheDir, entry.Name())
-		data, err := os.ReadFile(filePath)
-		if err != nil {
+		key := strings.TrimSuffix(entry.Name(), ".json")
+		env, err := GetJobEnvelope(cacheDir, key)
+		if err != nil || env.Response == nil {
 			continue
 		}
 
-		var env JobRecordEnvelope
-		if err := json.Unmarshal(data, &env); err != nil || env.Response == nil {
-			continue
-		}
-
-		if env.Record.SourceSHA256 == sourceSHA || env.Record.SHA256 == sourceSHA || strings.HasPrefix(entry.Name(), sourceSHA[:16]) {
+		matchByPrefix := len(sourceSHA) >= 16 && strings.HasPrefix(entry.Name(), sourceSHA[:16])
+		if env.Record.SourceSHA256 == sourceSHA || env.Record.SHA256 == sourceSHA || matchByPrefix {
 			if bestMatch == nil || env.Record.Timestamp.After(bestMatch.Record.Timestamp) {
-				cp := env
-				bestMatch = &cp
+				bestMatch = env
 			}
 		}
 	}
@@ -134,15 +130,9 @@ func FindCachedJobBySourceSHA(cacheDir, sourceSHA string) (*JobRecordEnvelope, e
 
 // SaveCachedResponse saves a Deepgram response JSON to cacheDir under key, wrapping in JobRecordEnvelope.
 func SaveCachedResponse(cacheDir, key string, resp *PreRecordedResponse) error {
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
-		return fmt.Errorf("creating cache directory %q: %w", cacheDir, err)
-	}
-
-	cachePath := filepath.Join(cacheDir, key+".json")
-
-	var env JobRecordEnvelope
-	if existingData, err := os.ReadFile(cachePath); err == nil {
-		_ = json.Unmarshal(existingData, &env)
+	env, _ := GetJobEnvelope(cacheDir, key)
+	if env == nil {
+		env = &JobRecordEnvelope{}
 	}
 
 	env.Response = resp
@@ -156,5 +146,5 @@ func SaveCachedResponse(cacheDir, key string, resp *PreRecordedResponse) error {
 		env.Record.DurationSeconds = resp.Metadata.Duration
 	}
 
-	return SaveJobEnvelope(cacheDir, key, env)
+	return SaveJobEnvelope(cacheDir, key, *env)
 }

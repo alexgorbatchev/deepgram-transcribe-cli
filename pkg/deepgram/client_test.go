@@ -157,6 +157,107 @@ func TestTranscribeMissingAPIKey(t *testing.T) {
 	}
 }
 
+func TestGetProjectIDAndRequestCost(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch r.URL.Path {
+		case "/v1/projects":
+			if r.Header.Get("Authorization") != "Token test-api-key" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"projects":[{"project_id":"proj-456","name":"Test Project"}]}`))
+
+		case "/v1/projects/proj-456/requests/req-789":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{
+				"request_id": "req-789",
+				"project_uuid": "proj-456",
+				"response": {
+					"details": {
+						"usd": 0.09633
+					}
+				}
+			}`))
+
+		case "/v1/projects/proj-456/requests/req-null":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`null`))
+
+		case "/v1/projects/proj-456/requests/req-forbidden":
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(`{"err_code":"FORBIDDEN"}`))
+
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient("test-api-key", WithEndpoint(server.URL))
+
+	// Test GetProjectID
+	projID, err := client.GetProjectID(context.Background())
+	if err != nil {
+		t.Fatalf("GetProjectID failed: %v", err)
+	}
+	if projID != "proj-456" {
+		t.Errorf("expected project ID 'proj-456', got %q", projID)
+	}
+
+	// Test GetRequestCost (success)
+	costFloat, err := client.GetRequestCost(context.Background(), "req-789")
+	if err != nil {
+		t.Fatalf("GetRequestCost failed: %v", err)
+	}
+	if costFloat != 0.09633 {
+		t.Errorf("expected cost 0.09633, got %f", costFloat)
+	}
+
+	// Test GetRequestCostFormatted
+	costFormatted, err := client.GetRequestCostFormatted(context.Background(), "req-789")
+	if err != nil {
+		t.Fatalf("GetRequestCostFormatted failed: %v", err)
+	}
+	if costFormatted != "$0.096" {
+		t.Errorf("expected cost formatted '$0.096', got %q", costFormatted)
+	}
+
+	// Test null response (log details unavailable)
+	_, err = client.GetRequestCost(context.Background(), "req-null")
+	if err == nil {
+		t.Fatal("expected error on null request details, got nil")
+	}
+	if !strings.Contains(err.Error(), "request log details unavailable") {
+		t.Errorf("expected error message to mention log details unavailable, got: %v", err)
+	}
+
+	// Test 403 Forbidden
+	_, err = client.GetRequestCost(context.Background(), "req-forbidden")
+	if err == nil {
+		t.Fatal("expected error on 403 forbidden, got nil")
+	}
+	if !strings.Contains(err.Error(), "Member/Admin scope") {
+		t.Errorf("expected error message to mention Member/Admin scope, got: %v", err)
+	}
+}
+
+func TestGetRequestCostEmptyIDOrKey(t *testing.T) {
+	clientNoKey := NewClient("")
+	_, err := clientNoKey.GetRequestCost(context.Background(), "req-123")
+	if err == nil {
+		t.Fatal("expected error when API key is missing, got nil")
+	}
+
+	clientWithKey := NewClient("some-key")
+	_, err = clientWithKey.GetRequestCost(context.Background(), "")
+	if err == nil {
+		t.Fatal("expected error when request ID is empty, got nil")
+	}
+}
+
 func TestFormatSeconds(t *testing.T) {
 	tests := []struct {
 		secs float64
