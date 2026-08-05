@@ -5,6 +5,7 @@ Workspace for `deepgram-transcribe-cli` — a Go CLI utility (`deepgram-transcri
 ## Repository & GitHub
 - Public GitHub Repository: `github.com/alexgorbatchev/deepgram-transcribe-cli`
 - Binary name: `deepgram-transcribe`
+- Installation: `go install github.com/alexgorbatchev/deepgram-transcribe-cli/cmd/deepgram-transcribe@latest`
 
 ## Shared Commands
 - Build binary: `just build` (outputs to `bin/deepgram-transcribe`)
@@ -19,7 +20,7 @@ Workspace for `deepgram-transcribe-cli` — a Go CLI utility (`deepgram-transcri
 - `pkg/terms/`: Tech interview keyterm vocabulary (`DefaultTechTerms`), custom term parser, and file loader.
 - `pkg/markdown/`: Markdown transcript formatter (`Format`) with speaker turn grouping and metadata table generation.
 
-## CLI Usage (Assuming `deepgram-transcribe` is in PATH)
+## CLI Usage (Assuming `deepgram-transcribe` is on PATH)
 - `deepgram-transcribe <audio-file>`: Default transcription command (outputs Markdown to stdout or `-o`).
 - `deepgram-transcribe cost <file|request-id>`: Query Deepgram Request ID, duration, channel count, model, and calculated cost for any completed job.
 - `deepgram-transcribe history`: View a chronological table of all past transcriptions and cumulative total spending.
