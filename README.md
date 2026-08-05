@@ -41,22 +41,28 @@ While the official Deepgram CLI ([`deepgram/cli`](https://github.com/deepgram/cl
 - **Deepgram API Key**: Set `DEEPGRAM_API_KEY` environment variable or pass `--api-key`.
 - **ffmpeg** (Optional, recommended): Enables automatic stereo-to-mono downmixing and dead-air silence trimming.
 
-## Installation & Build
+## Installation
 
-Build the binary using `just` or `go build`:
+### Option A: Pre-Compiled Release Binaries (Recommended)
+Download pre-compiled binaries for macOS, Linux, and Windows from [GitHub Releases](https://github.com/alexgorbatchev/deepgram-transcribe-cli/releases) or via `gh`:
 
+```bash
+gh release download --repo alexgorbatchev/deepgram-transcribe-cli --pattern "*Darwin_arm64*"
+```
+
+### Option B: Via `go install`
+```bash
+go install github.com/alexgorbatchev/deepgram-transcribe-cli/cmd/deepgram-transcribe@latest
+```
+
+### Option C: Build from Source
 ```bash
 cd deepgram-transcribe-cli
 just build
 # Binary output at bin/deepgram-transcribe
 ```
 
-To install directly into `$GOPATH/bin` or PATH:
-```bash
-go install github.com/alexgorbatchev/deepgram-transcribe-cli/cmd/deepgram-transcribe@latest
-```
-
-## Quick Start (Assuming `deepgram-transcribe` in PATH)
+## Quick Start (Assuming `deepgram-transcribe` on PATH)
 
 ```bash
 export DEEPGRAM_API_KEY="your-deepgram-api-key"

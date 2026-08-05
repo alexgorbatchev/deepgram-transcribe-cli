@@ -2,10 +2,20 @@
 
 Workspace for `deepgram-transcribe-cli` — a Go CLI utility (`deepgram-transcribe`) that transcribes phone call audio recordings (mp3, m4a, wav) into formatted Markdown with speaker diarization, tech interview keyterm boosting, and post-transcription cost tracking subcommands.
 
-## Repository & GitHub
-- Public GitHub Repository: `github.com/alexgorbatchev/deepgram-transcribe-cli`
+## Repository & GitHub Releases
+- Public GitHub Repository: [`github.com/alexgorbatchev/deepgram-transcribe-cli`](https://github.com/alexgorbatchev/deepgram-transcribe-cli)
+- GitHub Releases (Pre-compiled Binaries): [`github.com/alexgorbatchev/deepgram-transcribe-cli/releases`](https://github.com/alexgorbatchev/deepgram-transcribe-cli/releases)
 - Binary name: `deepgram-transcribe`
-- Installation: `go install github.com/alexgorbatchev/deepgram-transcribe-cli/cmd/deepgram-transcribe@latest`
+
+## Installation
+- **Pre-compiled Release Binaries**: Download directly from [GitHub Releases](https://github.com/alexgorbatchev/deepgram-transcribe-cli/releases) or via `gh`:
+  ```bash
+  gh release download --repo alexgorbatchev/deepgram-transcribe-cli --pattern "*Darwin_arm64*"
+  ```
+- **Via Go**:
+  ```bash
+  go install github.com/alexgorbatchev/deepgram-transcribe-cli/cmd/deepgram-transcribe@latest
+  ```
 
 ## Shared Commands
 - Build binary: `just build` (outputs to `bin/deepgram-transcribe`)
