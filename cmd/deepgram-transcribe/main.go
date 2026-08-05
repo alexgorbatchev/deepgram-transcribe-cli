@@ -562,8 +562,6 @@ func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoi
 	}
 
 	return nil
-
-	return nil
 }
 
 func formatTermsSummary(termList []string) string {
