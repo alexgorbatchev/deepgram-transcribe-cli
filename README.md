@@ -7,7 +7,7 @@ It features preconfigured tech interview vocabulary, speaker diarization, custom
 ## Features
 
 - **Markdown Output**: Formats transcripts into structured Markdown with header metadata, speaker turn grouping (`### Speaker 0 (00:00 - 00:15)`), and timestamps.
-- **Tech Interview Vocabulary**: Preconfigured with 50+ common engineering and system design terms (Go, Kubernetes, PostgreSQL, gRPC, React, Goroutines, System Design, etc.).
+- **Tech Interview Vocabulary**: Preconfigured with 80+ common engineering and system design terms across languages, frameworks, cloud infrastructure, databases, and protocols (see full vocabulary in [`pkg/terms/tech.go`](./pkg/terms/tech.go)).
 - **Custom Term Boosting**: Pass extra company names, people names, or terms via `-t/--term` or `--terms-file`.
 - **Source-Audio Caching & `--force` Flag**:
   - Automatically matches raw source audio content (`sha256(audioBytes)`).
