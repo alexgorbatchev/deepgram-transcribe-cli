@@ -16,3 +16,7 @@ coverage.html
 .env
 .tmp/
 *.tmp
+.codegraph
+.pi-subagents
+.cache
+
