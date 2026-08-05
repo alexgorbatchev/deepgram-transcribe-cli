@@ -9,6 +9,11 @@ import (
 	"strings"
 )
 
+const (
+	DefaultSilenceThreshold = "-30dB"
+	DefaultSilenceDuration  = "2.0"
+)
+
 var execCommand = exec.Command
 
 // PreprocessOptions configures audio optimization parameters before API transmission.
@@ -36,11 +41,11 @@ func BuildFFmpegArgs(inputPath, outputPath string, opts PreprocessOptions) []str
 	if opts.TrimSilence {
 		threshold := opts.SilenceThreshold
 		if threshold == "" {
-			threshold = "-30dB"
+			threshold = DefaultSilenceThreshold
 		}
 		duration := opts.SilenceDuration
 		if duration == "" {
-			duration = "2.0"
+			duration = DefaultSilenceDuration
 		}
 
 		filterStr := fmt.Sprintf("silenceremove=stop_periods=-1:stop_duration=%s:stop_threshold=%s", duration, threshold)
@@ -98,4 +103,27 @@ func PreprocessAudio(ctx context.Context, inputPath string, opts PreprocessOptio
 
 func execCommandWithContext(ctx context.Context, name string, arg ...string) *exec.Cmd {
 	return exec.CommandContext(ctx, name, arg...)
+}
+
+// DetectMIMEType returns the MIME type corresponding to an audio file's extension.
+func DetectMIMEType(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".mp3":
+		return "audio/mpeg"
+	case ".m4a":
+		return "audio/m4a"
+	case ".mp4":
+		return "audio/mp4"
+	case ".wav":
+		return "audio/wav"
+	case ".ogg":
+		return "audio/ogg"
+	case ".flac":
+		return "audio/flac"
+	case ".aac":
+		return "audio/aac"
+	default:
+		return "application/octet-stream"
+	}
 }

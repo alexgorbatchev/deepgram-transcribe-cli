@@ -50,6 +50,29 @@ func TestBuildFFmpegArgs(t *testing.T) {
 	}
 }
 
+func TestDetectMIMEType(t *testing.T) {
+	tests := []struct {
+		filename string
+		want     string
+	}{
+		{"audio.mp3", "audio/mpeg"},
+		{"call.m4a", "audio/m4a"},
+		{"recording.mp4", "audio/mp4"},
+		{"voice.wav", "audio/wav"},
+		{"recording.ogg", "audio/ogg"},
+		{"recording.flac", "audio/flac"},
+		{"audio.aac", "audio/aac"},
+		{"unknown.xyz", "application/octet-stream"},
+	}
+
+	for _, tt := range tests {
+		got := DetectMIMEType(tt.filename)
+		if got != tt.want {
+			t.Errorf("DetectMIMEType(%q) = %q, want %q", tt.filename, got, tt.want)
+		}
+	}
+}
+
 func TestPreprocessAudioNoOp(t *testing.T) {
 	opts := PreprocessOptions{
 		Mono:        false,
