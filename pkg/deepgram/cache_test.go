@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -100,6 +101,20 @@ func TestDefaultCacheDir(t *testing.T) {
 	dir := DefaultCacheDir()
 	if dir == "" {
 		t.Fatal("expected non-empty DefaultCacheDir")
+	}
+	if !strings.Contains(dir, ".cache/deepgram-transcribe") && !strings.Contains(dir, "deepgram-transcribe") {
+		t.Errorf("expected DefaultCacheDir() to end in 'deepgram-transcribe', got %q", dir)
+	}
+}
+
+func TestDefaultCacheDir_XDGOverride(t *testing.T) {
+	customDir := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", customDir)
+
+	got := DefaultCacheDir()
+	expected := filepath.Join(customDir, "deepgram-transcribe")
+	if got != expected {
+		t.Errorf("expected DefaultCacheDir() to be %q, got %q", expected, got)
 	}
 }
 

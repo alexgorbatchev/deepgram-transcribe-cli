@@ -11,30 +11,20 @@ import (
 	"strings"
 )
 
-// DefaultCacheDir returns the local cache directory path inside the project root's .tmp/
+// DefaultCacheDir returns the default transcript cache directory using XDG standards.
+// Priority:
+// 1. $XDG_CACHE_HOME/deepgram-transcribe (if XDG_CACHE_HOME is set)
+// 2. ~/.cache/deepgram-transcribe
 func DefaultCacheDir() string {
-	cwd, err := os.Getwd()
-	if err == nil {
-		dir := cwd
-		for {
-			tmpCandidate := filepath.Join(dir, ".tmp")
-			gitCandidate := filepath.Join(dir, ".git")
-
-			if _, err := os.Stat(tmpCandidate); err == nil {
-				return filepath.Join(tmpCandidate, "transcribe_cache")
-			}
-			if _, err := os.Stat(gitCandidate); err == nil {
-				return filepath.Join(dir, ".tmp", "transcribe_cache")
-			}
-
-			parent := filepath.Dir(dir)
-			if parent == dir {
-				break
-			}
-			dir = parent
-		}
+	if xdg := os.Getenv("XDG_CACHE_HOME"); xdg != "" {
+		return filepath.Join(xdg, "deepgram-transcribe")
 	}
-	return filepath.Join(".tmp", "transcribe_cache")
+
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".cache", "deepgram-transcribe")
+	}
+
+	return filepath.Join(".cache", "deepgram-transcribe")
 }
 
 // SourceAudioKey computes a SHA-256 hash strictly on raw source audio content bytes.
@@ -78,14 +68,14 @@ func GetCachedResponse(cacheDir, key string) (*PreRecordedResponse, error) {
 
 	// Fallback for raw PreRecordedResponse JSON files (e.g. unwrapped response dumps or test fixtures)
 	cachePath := filepath.Join(cacheDir, key+".json")
-	data, err := os.ReadFile(cachePath)
-	if err != nil {
-		return nil, fmt.Errorf("reading cache file %q: %w", cachePath, err)
+	data, readErr := os.ReadFile(cachePath)
+	if readErr != nil {
+		return nil, fmt.Errorf("reading cache file %q: %w", cachePath, readErr)
 	}
 
 	var resp PreRecordedResponse
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, fmt.Errorf("decoding cached response JSON: %w", err)
+	if jsonErr := json.Unmarshal(data, &resp); jsonErr != nil {
+		return nil, fmt.Errorf("decoding cached response JSON: %w", jsonErr)
 	}
 
 	return &resp, nil

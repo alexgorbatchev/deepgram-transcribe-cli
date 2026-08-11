@@ -33,6 +33,7 @@ type transcribeOptions struct {
 	language         string
 	outputFile       string
 	apiKey           string
+	cacheDir         string
 	noDiarize        bool
 	noTechTerms      bool
 	noCache          bool
@@ -42,6 +43,13 @@ type transcribeOptions struct {
 	noTrimSilence    bool
 	silenceThreshold string
 	silenceDuration  string
+}
+
+func resolveCacheDir(opts *transcribeOptions, defaultDir string) string {
+	if opts != nil && opts.cacheDir != "" {
+		return opts.cacheDir
+	}
+	return defaultDir
 }
 
 func NewRootCmd() *cobra.Command {
@@ -73,6 +81,7 @@ Default transcription output goes to stdout:
 	}
 
 	flags := rootCmd.Flags()
+	flags.StringVar(&opts.cacheDir, "cache-dir", "", "Custom cache directory path (defaults to $XDG_CACHE_HOME/deepgram-transcribe or ~/.cache/deepgram-transcribe)")
 	flags.StringArrayVarP(&opts.extraTerms, "term", "t", nil, "Additional terms to boost recognition (company names, people names, etc., can be used multiple times or comma-separated)")
 	flags.StringVar(&opts.termsFilePath, "terms-file", "", "Path to a text file containing additional terms (one per line or comma-separated)")
 	flags.StringVarP(&opts.model, "model", "m", "nova-3", "Deepgram transcription model (e.g. nova-3, nova-2, flux)")
@@ -345,6 +354,8 @@ func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoi
 		opts = &transcribeOptions{}
 	}
 
+	effectiveCacheDir := resolveCacheDir(opts, cacheDir)
+
 	audioPath := args[0]
 
 	fileInfo, err := os.Stat(audioPath)
@@ -400,14 +411,14 @@ func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoi
 	// CHECK CACHE FIRST BEFORE RUNNING FFMPEG OR MAKING API CALLS
 	if !opts.noCache && !opts.force {
 		// 1. Exact options match
-		cachedResp, err := deepgram.GetCachedResponse(cacheDir, optsKey)
+		cachedResp, err := deepgram.GetCachedResponse(effectiveCacheDir, optsKey)
 		if err == nil && cachedResp != nil {
 			cmd.PrintErrf("Using cached transcript for %s (%s, key: %s...)\n",
 				filepath.Base(audioPath), formatFileSize(fileInfo.Size()), optsKey[:8])
 			resp = cachedResp
 		} else {
 			// 2. Source audio match
-			jobEnv, err := deepgram.FindCachedJobBySourceSHA(cacheDir, sourceSHA)
+			jobEnv, err := deepgram.FindCachedJobBySourceSHA(effectiveCacheDir, sourceSHA)
 			if err == nil && jobEnv != nil && jobEnv.Response != nil {
 				cmd.PrintErrf("[transcribe] Found cached transcript for %s (source audio matched).\n", filepath.Base(audioPath))
 				if len(jobEnv.Record.Terms) > 0 || len(combinedTerms) > 0 {
@@ -492,7 +503,9 @@ func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoi
 
 		// Save to cache
 		if !opts.noCache {
-			_ = deepgram.SaveCachedResponse(cacheDir, optsKey, resp)
+			if err := deepgram.SaveCachedResponse(effectiveCacheDir, optsKey, resp); err != nil {
+				cmd.PrintErrf("[transcribe] Warning: Failed to save response to cache: %v\n", err)
+			}
 		}
 	}
 
@@ -525,7 +538,9 @@ func runTranscribeWithEndpoint(cmd *cobra.Command, args []string, overrideEndpoi
 			CostUSD:         costUSD,
 			CostIsActual:    false,
 		}
-		_ = deepgram.SaveJobRecord(cacheDir, jobRec)
+		if err := deepgram.SaveJobRecord(effectiveCacheDir, jobRec); err != nil {
+			cmd.PrintErrf("[transcribe] Warning: Failed to save job record to history: %v\n", err)
+		}
 	}
 
 	meta := markdown.MetaInfo{

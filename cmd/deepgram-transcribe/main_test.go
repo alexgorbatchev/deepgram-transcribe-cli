@@ -560,3 +560,44 @@ func TestCostCommandFallbackEstimatedCost(t *testing.T) {
 		t.Errorf("expected cost output to contain 'N/A yet (Estimated: $0.011 USD)', got:\n%s", outStr)
 	}
 }
+
+func TestCustomCacheDirFlag(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"metadata": {"request_id": "req-flag-test", "duration": 30.0},
+			"results": {"utterances": [{"speaker": 0, "transcript": "Testing cache dir flag"}]}
+		}`))
+	}))
+	defer server.Close()
+
+	customDir := t.TempDir()
+	audioFile := filepath.Join(t.TempDir(), "flag_test.mp3")
+	if err := os.WriteFile(audioFile, []byte("dummy audio content for flag test"), 0644); err != nil {
+		t.Fatalf("failed to write dummy audio file: %v", err)
+	}
+
+	cmd := NewRootCmdWithDirAndEndpoint(t.TempDir(), server.URL)
+	var outBuf, errBuf bytes.Buffer
+	cmd.SetOut(&outBuf)
+	cmd.SetErr(&errBuf)
+	cmd.SetArgs([]string{
+		audioFile,
+		"--api-key", "test-key",
+		"--cache-dir", customDir,
+		"--no-preprocess",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("transcribe with --cache-dir flag failed: %v", err)
+	}
+
+	recs, err := deepgram.ListJobRecords(customDir)
+	if err != nil {
+		t.Fatalf("failed to list job records from customDir: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Errorf("expected 1 job record in customDir, got %d", len(recs))
+	}
+}
