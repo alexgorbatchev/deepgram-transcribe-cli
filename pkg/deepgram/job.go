@@ -2,9 +2,11 @@ package deepgram
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -190,34 +192,98 @@ func ListJobRecords(cacheDir string) ([]JobRecord, error) {
 	return records, nil
 }
 
-// FindJobRecordByTarget searches for a JobRecord by audio file path / content SHA or Request ID.
+// FindJobRecordByTarget looks up a job by audio file or by Deepgram request ID.
+//
+// A file matches only when its contents hash to a value that was recorded, never
+// when it merely shares a name: two different recordings called interview.m4a
+// must not resolve to each other's cost.
 func FindJobRecordByTarget(cacheDir, target string) (*JobRecord, error) {
-	// 1. Try matching as an existing local audio file (SHA-256 lookup)
-	if _, statErr := os.Stat(target); statErr == nil {
-		audioBytes, readErr := os.ReadFile(target)
-		if readErr == nil {
-			records, listErr := ListJobRecords(cacheDir)
-			if listErr == nil {
-				rawSHA := SourceAudioKey(audioBytes)
-				for _, rec := range records {
-					matchPrefix := len(rawSHA) >= 16 && strings.HasPrefix(rec.SHA256, rawSHA[:16])
-					if rec.SourceSHA256 == rawSHA || rec.SHA256 == rawSHA || matchPrefix || filepath.Base(rec.FilePath) == filepath.Base(target) {
-						r := rec
-						return &r, nil
-					}
-				}
-			}
+	info, statErr := os.Stat(target)
+	if statErr != nil || info.IsDir() {
+		return GetJobRecordByRequestID(cacheDir, target)
+	}
+
+	audioBytes, err := os.ReadFile(target)
+	if err != nil {
+		return nil, fmt.Errorf("reading audio file %q: %w", target, err)
+	}
+
+	records, err := ListJobRecords(cacheDir)
+	if err != nil {
+		return nil, err
+	}
+
+	// Records arrive newest first, so the first match is the most recent one.
+	sourceSHA := SourceAudioKey(audioBytes)
+	for _, rec := range records {
+		if rec.SourceSHA256 == sourceSHA || rec.SHA256 == sourceSHA {
+			return &rec, nil
 		}
 	}
 
-	// 2. If not found by file SHA/name, try matching by Request ID
-	return GetJobRecordByRequestID(cacheDir, target)
+	return nil, fmt.Errorf("no transcription job found for audio file %q", target)
 }
 
-// ClearCache removes all files in cacheDir.
-func ClearCache(cacheDir string) error {
-	if err := os.RemoveAll(cacheDir); err != nil {
-		return fmt.Errorf("clearing cache directory %q: %w", cacheDir, err)
+// cacheFileName matches the file names this package writes: a SHA-256 key in
+// lowercase hex, plus the .json suffix.
+var cacheFileName = regexp.MustCompile(`^[0-9a-f]{64}\.json$`)
+
+// ClearCache deletes the cache files this package created in cacheDir and reports
+// how many were removed.
+//
+// It removes individual files rather than the directory, and only files whose
+// names match the keys it writes, so pointing --cache-dir at the wrong folder can
+// never destroy unrelated data.
+func ClearCache(cacheDir string) (int, error) {
+	if err := checkClearableCacheDir(cacheDir); err != nil {
+		return 0, err
 	}
+
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("reading cache directory %q: %w", cacheDir, err)
+	}
+
+	removed := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !cacheFileName.MatchString(entry.Name()) {
+			continue
+		}
+
+		path := filepath.Join(cacheDir, entry.Name())
+		if err := os.Remove(path); err != nil {
+			return removed, fmt.Errorf("removing cache file %q: %w", path, err)
+		}
+		removed++
+	}
+
+	return removed, nil
+}
+
+// checkClearableCacheDir rejects locations that cannot be a transcript cache,
+// so that a mistyped --cache-dir is refused instead of acted on.
+func checkClearableCacheDir(cacheDir string) error {
+	if strings.TrimSpace(cacheDir) == "" {
+		return errors.New("no cache directory was given")
+	}
+
+	abs, err := filepath.Abs(cacheDir)
+	if err != nil {
+		return fmt.Errorf("resolving cache directory %q: %w", cacheDir, err)
+	}
+
+	if abs == filepath.Dir(abs) {
+		return fmt.Errorf("refusing to clear the filesystem root %q", abs)
+	}
+
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if homeAbs, err := filepath.Abs(home); err == nil && homeAbs == abs {
+			return fmt.Errorf("refusing to clear the home directory %q", abs)
+		}
+	}
+
 	return nil
 }

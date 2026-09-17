@@ -103,8 +103,10 @@ func FindCachedJobBySourceSHA(cacheDir, sourceSHA string) (*JobRecordEnvelope, e
 			continue
 		}
 
-		matchByPrefix := len(sourceSHA) >= 16 && strings.HasPrefix(entry.Name(), sourceSHA[:16])
-		if env.Record.SourceSHA256 == sourceSHA || env.Record.SHA256 == sourceSHA || matchByPrefix {
+		// Only exact hash matches count. The file name is keyed by the request
+		// options, which hash different input, so comparing it against a source
+		// audio hash would match by coincidence or not at all.
+		if env.Record.SourceSHA256 == sourceSHA || env.Record.SHA256 == sourceSHA {
 			if bestMatch == nil || env.Record.Timestamp.After(bestMatch.Record.Timestamp) {
 				bestMatch = env
 			}

@@ -58,17 +58,76 @@ func TestSaveAndGetJobRecord(t *testing.T) {
 		t.Fatalf("expected 1 job record, got %d", len(recs))
 	}
 
-	// Clear cache
-	if err := ClearCache(dir); err != nil {
-		t.Fatalf("ClearCache failed: %v", err)
+}
+
+func TestClearCacheRemovesOnlyItsOwnFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	key := SourceAudioKey([]byte("recording contents"))
+	if err := SaveJobRecord(dir, JobRecord{RequestID: "req-clear", SHA256: key}); err != nil {
+		t.Fatalf("SaveJobRecord failed: %v", err)
 	}
 
-	recsAfterClear, err := ListJobRecords(dir)
-	if err != nil {
-		t.Fatalf("ListJobRecords after clear failed: %v", err)
+	unrelated := filepath.Join(dir, "important.json")
+	if err := os.WriteFile(unrelated, []byte(`{"keep":true}`), 0o644); err != nil {
+		t.Fatalf("writing an unrelated file failed: %v", err)
 	}
-	if len(recsAfterClear) != 0 {
-		t.Errorf("expected 0 job records after clear, got %d", len(recsAfterClear))
+
+	removed, err := ClearCache(dir)
+	if err != nil {
+		t.Fatalf("ClearCache failed: %v", err)
+	}
+	if removed != 1 {
+		t.Errorf("expected 1 removed cache file, got %d", removed)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, key+".json")); !os.IsNotExist(err) {
+		t.Errorf("expected the cache file to be removed, got err %v", err)
+	}
+	if _, err := os.Stat(unrelated); err != nil {
+		t.Errorf("expected the unrelated file to survive, got %v", err)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Errorf("expected the cache directory itself to survive, got %v", err)
+	}
+}
+
+func TestClearCacheRefusesDangerousDirectories(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("home directory is unavailable: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		dir  string
+	}{
+		{"empty", ""},
+		{"whitespace", "   "},
+		{"filesystem root", string(filepath.Separator)},
+		{"home directory", home},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			removed, err := ClearCache(tt.dir)
+			if err == nil {
+				t.Fatalf("expected ClearCache(%q) to be refused", tt.dir)
+			}
+			if removed != 0 {
+				t.Errorf("expected nothing to be removed, got %d", removed)
+			}
+		})
+	}
+}
+
+func TestClearCacheOnMissingDirectory(t *testing.T) {
+	removed, err := ClearCache(filepath.Join(t.TempDir(), "never-created"))
+	if err != nil {
+		t.Fatalf("expected a missing cache directory to be harmless, got %v", err)
+	}
+	if removed != 0 {
+		t.Errorf("expected nothing to be removed, got %d", removed)
 	}
 }
 
@@ -202,6 +261,36 @@ func TestFindJobRecordByTarget(t *testing.T) {
 	_, err = FindJobRecordByTarget(dir, "nonexistent-target")
 	if err == nil {
 		t.Error("expected error for nonexistent target, got nil")
+	}
+}
+
+func TestFindJobRecordByTargetIgnoresMatchingFilenames(t *testing.T) {
+	dir := t.TempDir()
+
+	recorded := []byte("the recording that was actually transcribed")
+	if err := SaveJobRecord(dir, JobRecord{
+		RequestID:    "req-recorded",
+		Filename:     "interview.m4a",
+		FilePath:     filepath.Join(dir, "first", "interview.m4a"),
+		SourceSHA256: SourceAudioKey(recorded),
+		SHA256:       CacheKey(recorded, Options{}),
+	}); err != nil {
+		t.Fatalf("SaveJobRecord failed: %v", err)
+	}
+
+	// A different recording that happens to carry the same file name must not
+	// resolve to the record above, or it would report someone else's cost.
+	otherDir := filepath.Join(dir, "second")
+	if err := os.MkdirAll(otherDir, 0o755); err != nil {
+		t.Fatalf("creating the second directory failed: %v", err)
+	}
+	impostor := filepath.Join(otherDir, "interview.m4a")
+	if err := os.WriteFile(impostor, []byte("an entirely different recording"), 0o644); err != nil {
+		t.Fatalf("writing the second recording failed: %v", err)
+	}
+
+	if got, err := FindJobRecordByTarget(dir, impostor); err == nil {
+		t.Errorf("expected no match for a different recording, got record %q", got.RequestID)
 	}
 }
 
