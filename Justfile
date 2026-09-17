@@ -1,37 +1,43 @@
 set positional-arguments := true
 
+binary_name := "deepgram-transcribe"
+
 default: build
 
-# Build the deepgram-transcribe binary into bin/
+# Build the binary into bin/
 build:
 	mkdir -p bin
-	go build -o bin/deepgram-transcribe ./cmd/deepgram-transcribe
+	go build -o bin/{{binary_name}} ./cmd/{{binary_name}}
 
-# Run the deepgram-transcribe CLI binary with any arguments
-# Usage: just run "/path/with spaces/file.m4a"
-# Usage: just run history
+# Run the CLI in human mode
+# Usage: just run transcript create "/path/with spaces/file.m4a"
 run *args: build
-	./bin/deepgram-transcribe "$@"
+	./bin/{{binary_name}} "$@"
 
-# View transcription history
-# Usage: just history
-history *args: build
-	./bin/deepgram-transcribe history "$@"
-
-# View post-transcription cost & metadata for a file or request ID
-# Usage: just cost "/path/with spaces/file.m4a"
-cost *args: build
-	./bin/deepgram-transcribe cost "$@"
+# Run the CLI in agent mode, which trades formatting for fewer tokens
+# Usage: just run-ai job list
+run-ai *args: build
+	AGENT=1 ./bin/{{binary_name}} "$@"
 
 # Run unit tests
 test:
-	go test -v ./...
+	go test -race ./...
 
-# Run unit tests and calculate coverage
+# Check formatting and run static analysis
+lint:
+	gofmt -l .
+	go vet ./...
+	golangci-lint run
+
+# Run the full pre-commit gate
+check: lint test
+	go mod tidy -diff
+
+# Run unit tests and report coverage
 coverage:
 	go test -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out
 
-# Clean build artifacts
+# Remove build artifacts
 clean:
 	rm -rf bin/ coverage.out coverage.html
