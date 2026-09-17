@@ -30,7 +30,9 @@ func LoadTermsFromFile(path string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening terms file %q: %w", path, err)
 	}
-	defer file.Close()
+	// The file is only read, so a failure to close it cannot affect the terms
+	// that were already parsed out of it.
+	defer func() { _ = file.Close() }()
 
 	var rawLines []string
 	scanner := bufio.NewScanner(file)

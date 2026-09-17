@@ -10,6 +10,17 @@ import (
 	"time"
 )
 
+// writeStub sends a canned response body from a stub Deepgram server and fails
+// the test if it cannot be delivered, since every assertion downstream depends
+// on the client receiving it.
+func writeStub(t *testing.T, w http.ResponseWriter, body []byte) {
+	t.Helper()
+
+	if _, err := w.Write(body); err != nil {
+		t.Errorf("writing stub response: %v", err)
+	}
+}
+
 func TestBuildURL(t *testing.T) {
 	opts := Options{
 		Model:           "nova-3",
@@ -99,7 +110,7 @@ func TestTranscribeRequest(t *testing.T) {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(mockResponse))
+		writeStub(t, w, []byte(mockResponse))
 	}))
 	defer server.Close()
 
@@ -132,7 +143,7 @@ func TestTranscribeRequest(t *testing.T) {
 func TestTranscribeHTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`{"err_code":"INVALID_MODEL"}`))
+		writeStub(t, w, []byte(`{"err_code":"INVALID_MODEL"}`))
 	}))
 	defer server.Close()
 
@@ -168,11 +179,11 @@ func TestGetProjectIDAndRequestCost(t *testing.T) {
 				return
 			}
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"projects":[{"project_id":"proj-456","name":"Test Project"}]}`))
+			writeStub(t, w, []byte(`{"projects":[{"project_id":"proj-456","name":"Test Project"}]}`))
 
 		case "/v1/projects/proj-456/requests/req-789":
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{
+			writeStub(t, w, []byte(`{
 				"request_id": "req-789",
 				"project_uuid": "proj-456",
 				"response": {
@@ -184,11 +195,11 @@ func TestGetProjectIDAndRequestCost(t *testing.T) {
 
 		case "/v1/projects/proj-456/requests/req-null":
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`null`))
+			writeStub(t, w, []byte(`null`))
 
 		case "/v1/projects/proj-456/requests/req-forbidden":
 			w.WriteHeader(http.StatusForbidden)
-			w.Write([]byte(`{"err_code":"FORBIDDEN"}`))
+			writeStub(t, w, []byte(`{"err_code":"FORBIDDEN"}`))
 
 		default:
 			w.WriteHeader(http.StatusNotFound)

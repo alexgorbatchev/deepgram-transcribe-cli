@@ -39,9 +39,9 @@ type Channel struct {
 
 // Alternative contains a transcribed string and individual word details.
 type Alternative struct {
-	Transcript string `json:"transcript"`
-	Confidence float64`json:"confidence"`
-	Words      []Word `json:"words"`
+	Transcript string  `json:"transcript"`
+	Confidence float64 `json:"confidence"`
+	Words      []Word  `json:"words"`
 }
 
 // Utterance represents a single continuous speech segment attributed to a specific speaker.

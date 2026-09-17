@@ -137,7 +137,9 @@ func (c *Client) Transcribe(ctx context.Context, audioReader io.Reader, mimeType
 	if err != nil {
 		return nil, fmt.Errorf("executing request to Deepgram: %w", err)
 	}
-	defer resp.Body.Close()
+	// The body is drained or abandoned below; a failure to close it cannot be
+	// acted on and must not mask the result being returned.
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
@@ -219,7 +221,9 @@ func (c *Client) GetProjectID(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("requesting projects from Deepgram: %w", err)
 	}
-	defer resp.Body.Close()
+	// The body is drained or abandoned below; a failure to close it cannot be
+	// acted on and must not mask the result being returned.
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusForbidden {
 		return "", errors.New("API key lacks Member/Admin scope to list projects")
@@ -263,7 +267,9 @@ func (c *Client) GetRequestCost(ctx context.Context, requestID string) (float64,
 	if err != nil {
 		return 0, fmt.Errorf("requesting request details from Deepgram: %w", err)
 	}
-	defer resp.Body.Close()
+	// The body is drained or abandoned below; a failure to close it cannot be
+	// acted on and must not mask the result being returned.
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusForbidden {
 		return 0, errors.New("API key lacks Member/Admin scope to view request logs")

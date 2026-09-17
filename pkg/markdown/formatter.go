@@ -23,7 +23,7 @@ func Format(resp *deepgram.PreRecordedResponse, meta MetaInfo) string {
 	var sb strings.Builder
 
 	// Header
-	sb.WriteString(fmt.Sprintf("# Transcript: %s\n\n", meta.Filename))
+	fmt.Fprintf(&sb, "# Transcript: %s\n\n", meta.Filename)
 
 	// Metadata Box / Table
 	sb.WriteString("## Metadata\n\n")
@@ -31,18 +31,18 @@ func Format(resp *deepgram.PreRecordedResponse, meta MetaInfo) string {
 	sb.WriteString("| :--- | :--- |\n")
 
 	if !meta.Timestamp.IsZero() {
-		sb.WriteString(fmt.Sprintf("| **Date** | %s |\n", meta.Timestamp.Format("2006-01-02 15:04:05 MST")))
+		fmt.Fprintf(&sb, "| **Date** | %s |\n", meta.Timestamp.Format("2006-01-02 15:04:05 MST"))
 	}
 	if meta.FileSize != "" {
-		sb.WriteString(fmt.Sprintf("| **File Size** | %s |\n", meta.FileSize))
+		fmt.Fprintf(&sb, "| **File Size** | %s |\n", meta.FileSize)
 	}
 	if resp != nil && resp.Metadata.Duration > 0 {
-		sb.WriteString(fmt.Sprintf("| **Duration** | %s |\n", deepgram.FormatSeconds(resp.Metadata.Duration)))
+		fmt.Fprintf(&sb, "| **Duration** | %s |\n", deepgram.FormatSeconds(resp.Metadata.Duration))
 	}
 	if meta.Model != "" {
-		sb.WriteString(fmt.Sprintf("| **Model** | `%s` |\n", meta.Model))
+		fmt.Fprintf(&sb, "| **Model** | `%s` |\n", meta.Model)
 	}
-	sb.WriteString(fmt.Sprintf("| **Diarization** | `%t` |\n", meta.Diarized))
+	fmt.Fprintf(&sb, "| **Diarization** | `%t` |\n", meta.Diarized)
 
 	if len(meta.KeyTerms) > 0 {
 		var termsSummary string
@@ -51,7 +51,7 @@ func Format(resp *deepgram.PreRecordedResponse, meta MetaInfo) string {
 		} else {
 			termsSummary = strings.Join(meta.KeyTerms, ", ")
 		}
-		sb.WriteString(fmt.Sprintf("| **Key Terms** | %s |\n", termsSummary))
+		fmt.Fprintf(&sb, "| **Key Terms** | %s |\n", termsSummary)
 	}
 
 	sb.WriteString("\n---\n\n")
@@ -124,7 +124,7 @@ func formatUtterances(sb *strings.Builder, utterances []deepgram.Utterance) {
 
 	for _, b := range blocks {
 		timeRange := fmt.Sprintf("%s - %s", deepgram.FormatSeconds(b.startTime), deepgram.FormatSeconds(b.endTime))
-		sb.WriteString(fmt.Sprintf("### Speaker %d (%s)\n\n", b.speaker, timeRange))
+		fmt.Fprintf(sb, "### Speaker %d (%s)\n\n", b.speaker, timeRange)
 		for _, para := range b.paragraphs {
 			sb.WriteString(para)
 			sb.WriteString("\n\n")

@@ -82,8 +82,12 @@ func PreprocessAudio(ctx context.Context, inputPath string, opts PreprocessOptio
 	if err != nil {
 		return "", noCleanup, fmt.Errorf("creating temp audio file: %w", err)
 	}
+	// The file is only needed as a reserved name: ffmpeg writes the audio itself,
+	// so it has to be closed before ffmpeg is started.
 	outputPath := tmpFile.Name()
-	tmpFile.Close()
+	if err := tmpFile.Close(); err != nil {
+		return "", noCleanup, fmt.Errorf("closing temp audio file %q: %w", outputPath, err)
+	}
 
 	cleanup := func() {
 		_ = os.Remove(outputPath)
