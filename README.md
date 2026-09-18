@@ -165,19 +165,6 @@ The official [`deepgram/cli`](https://github.com/deepgram/cli) streams audio to 
 | **Spending history** | `job inspect` and `job list` track request IDs, duration and running spend. | None. Requires the management API or the web dashboard. |
 | **Output** | Markdown with a metadata table and speaker turns. | Raw JSON, VTT, SRT or plain text. |
 
-# Development
-
-```bash
-just build        # Build the binary into bin/
-just run          # Run it in human mode
-just run-ai       # Run it in agent mode
-just test         # Run the test suite
-just lint         # Check formatting and run static analysis
-just check        # Lint, test and verify module hygiene
-just coverage     # Report test coverage
-just update-deps  # Update Go module dependencies
-```
-
 # License
 
 MIT License (c) 2026 Alex Gorbatchev
