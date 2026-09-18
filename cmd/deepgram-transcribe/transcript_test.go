@@ -99,6 +99,47 @@ func TestTranscriptCreateWritesTranscriptAndRecordsJob(t *testing.T) {
 	}
 }
 
+// TestTranscriptCreateSaysWhenItCannotEstimateTheCost covers a model Deepgram
+// no longer publishes a rate for: the run must say the cost is not known rather
+// than print a number nobody can source.
+func TestTranscriptCreateSaysWhenItCannotEstimateTheCost(t *testing.T) {
+	server := newTranscribeServer(t, transcribeResponseJSON)
+	cacheDir := t.TempDir()
+	workDir := t.TempDir()
+
+	audioPath := writeAudio(t, workDir, "legacy.m4a", "fake audio content")
+	outputPath := filepath.Join(workDir, "legacy.md")
+
+	root, _, errOut := newTestCLI(t, cacheDir, server.URL)
+	root.SetArgs([]string{
+		"transcript", "create", audioPath,
+		"--api-key", "test-key",
+		"-m", "enhanced",
+		"--no-preprocess",
+		"-o", outputPath,
+	})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("transcript create failed: %v", err)
+	}
+
+	progress := errOut.String()
+	if strings.Contains(progress, "at a cost of") {
+		t.Errorf("expected no cost to be quoted for an unpriced model, got: %s", progress)
+	}
+	if !strings.Contains(progress, "does not publish a rate") {
+		t.Errorf("expected an explanation of why the cost is unknown, got: %s", progress)
+	}
+
+	records, err := deepgram.ListJobRecords(cacheDir)
+	if err != nil {
+		t.Fatalf("listing job records: %v", err)
+	}
+	if len(records) != 1 || records[0].CostUSD != deepgram.CostUnknown {
+		t.Fatalf("expected the stored cost to read as unknown, got %+v", records)
+	}
+}
+
 func TestTranscriptCreateServesCachedResponseBeforeTouchingAudio(t *testing.T) {
 	cacheDir := t.TempDir()
 	audioContent := "fake raw audio bytes for cache first test"
@@ -107,7 +148,7 @@ func TestTranscriptCreateServesCachedResponseBeforeTouchingAudio(t *testing.T) {
 	request := deepgram.Options{
 		Model:           defaultModel,
 		Language:        defaultLanguage,
-		Diarize:         true,
+		DiarizeModel:    deepgram.DiarizeModelLatest,
 		SmartFormatting: true,
 		Utterances:      true,
 		Punctuate:       true,

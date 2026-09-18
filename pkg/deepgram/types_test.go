@@ -5,6 +5,36 @@ import (
 	"testing"
 )
 
+// TestOptionsKeyterms covers the single definition of "this request boosts
+// vocabulary", which decides both what BuildURL sends and whether the cost
+// estimate carries Deepgram's keyterm prompting charge.
+func TestOptionsKeyterms(t *testing.T) {
+	tests := []struct {
+		name  string
+		terms []string
+		want  []string
+	}{
+		{"none", nil, []string{}},
+		{"trimmed", []string{"  Kubernetes  "}, []string{"Kubernetes"}},
+		{"blanks dropped", []string{"", "   ", "Go"}, []string{"Go"}},
+		{"all blank", []string{"", " "}, []string{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Options{Terms: tt.terms}.Keyterms()
+			if len(got) != len(tt.want) {
+				t.Fatalf("Keyterms() = %q, want %q", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("Keyterms()[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestPreRecordedResponseUnmarshal(t *testing.T) {
 	jsonResp := `{
 		"metadata": {

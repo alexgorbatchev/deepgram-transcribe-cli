@@ -166,9 +166,14 @@ func runJobInspect(cmd *cobra.Command, g *globalOptions, target string) error {
 		Add("Made smaller first", "%t", record.Preprocessed).
 		Add("Model", "%s", record.Model)
 
-	if record.CostIsActual {
+	switch {
+	case record.CostIsActual:
 		fields.Add("Cost", "%s", record.CostUSD)
-	} else {
+	case record.CostUSD == "" || record.CostUSD == deepgram.CostUnknown:
+		// Deepgram publishes no rate for this model, so there is no estimate to
+		// stand in until the real charge arrives.
+		fields.Add("Cost", "%s", costPending)
+	default:
 		fields.Add("Cost", "%s, estimated at %s", costPending, record.CostUSD)
 	}
 

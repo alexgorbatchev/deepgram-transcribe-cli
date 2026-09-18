@@ -40,8 +40,8 @@ func CacheKey(audioData []byte, opts Options) string {
 	h.Write([]byte(opts.Model))
 	h.Write([]byte(opts.Language))
 
-	if opts.Diarize {
-		h.Write([]byte(":diarize"))
+	if opts.Diarized() {
+		h.Write([]byte(":diarize_model=" + opts.DiarizeModel))
 	}
 	if opts.SmartFormatting {
 		h.Write([]byte(":smart_format"))

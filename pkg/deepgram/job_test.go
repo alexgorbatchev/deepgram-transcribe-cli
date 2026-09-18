@@ -131,26 +131,6 @@ func TestClearCacheOnMissingDirectory(t *testing.T) {
 	}
 }
 
-func TestCalculateCostUSD(t *testing.T) {
-	tests := []struct {
-		duration float64
-		channels int
-		want     string
-	}{
-		{60.0, 1, "$0.004"},
-		{600.0, 1, "$0.043"},
-		{600.0, 2, "$0.086"},
-		{0.0, 0, "$0.000"},
-	}
-
-	for _, tt := range tests {
-		got := CalculateCostUSD(tt.duration, tt.channels)
-		if got != tt.want {
-			t.Errorf("CalculateCostUSD(%f, %d) = %q, want %q", tt.duration, tt.channels, got, tt.want)
-		}
-	}
-}
-
 func TestCalculateCostWithOptions(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -160,45 +140,112 @@ func TestCalculateCostWithOptions(t *testing.T) {
 		want     string
 	}{
 		{
-			name:     "default nova-3 no diarization",
+			name:     "default nova-3 with no add-ons",
 			duration: 600.0,
 			channels: 1,
 			opts:     Options{Model: "nova-3"},
 			want:     "$0.043",
 		},
 		{
-			name:     "nova-3 with diarization",
-			duration: 1019.588, // ~17 min
+			// Deepgram bills speaker diarization only on streaming audio; on
+			// pre-recorded audio it is included in the model rate.
+			name:     "diarization alone costs nothing extra",
+			duration: 600.0,
 			channels: 1,
-			opts:     Options{Model: "nova-3", Diarize: true},
-			want:     "$0.096", // Matches actual Deepgram billing ($0.09633)
+			opts:     Options{Model: "nova-3", DiarizeModel: DiarizeModelLatest},
+			want:     "$0.043",
 		},
 		{
-			name:     "enhanced model",
+			name:     "keyterm prompting is the billed add-on",
+			duration: 600.0,
+			channels: 1,
+			opts:     Options{Model: "nova-3", Terms: []string{"Kubernetes"}},
+			want:     "$0.056",
+		},
+		{
+			name:     "blank terms are never sent, so they never bill",
+			duration: 600.0,
+			channels: 1,
+			opts:     Options{Model: "nova-3", Terms: []string{"", "   "}},
+			want:     "$0.043",
+		},
+		{
+			name:     "nova-3 with diarization and keyterms",
+			duration: 1019.588, // ~17 min
+			channels: 1,
+			opts:     Options{Model: "nova-3", DiarizeModel: DiarizeModelLatest, Terms: []string{"Kubernetes"}},
+			want:     "$0.095",
+		},
+		{
+			name:     "nova-3 multilingual costs more per minute",
+			duration: 600.0,
+			channels: 1,
+			opts:     Options{Model: "nova-3", Language: "multi"},
+			want:     "$0.052",
+		},
+		{
+			name:     "multilingual is recognised whatever its case",
+			duration: 600.0,
+			channels: 1,
+			opts:     Options{Model: "nova-3-general", Language: " MULTI "},
+			want:     "$0.052",
+		},
+		{
+			name:     "a single spoken language is monolingual",
+			duration: 600.0,
+			channels: 1,
+			opts:     Options{Model: "nova-3", Language: "en"},
+			want:     "$0.043",
+		},
+		{
+			name:     "no model means the default one",
+			duration: 600.0,
+			channels: 1,
+			opts:     Options{},
+			want:     "$0.043",
+		},
+		{
+			name:     "whisper large",
+			duration: 600.0,
+			channels: 1,
+			opts:     Options{Model: "whisper-large"},
+			want:     "$0.048",
+		},
+		{
+			// Deepgram's rate card no longer prices these models, so quoting a
+			// figure for them would be inventing one.
+			name:     "enhanced is no longer publicly priced",
 			duration: 600.0,
 			channels: 1,
 			opts:     Options{Model: "enhanced"},
-			want:     "$0.145",
+			want:     CostUnknown,
 		},
 		{
-			name:     "base model",
+			name:     "base is no longer publicly priced",
 			duration: 600.0,
 			channels: 1,
 			opts:     Options{Model: "base"},
-			want:     "$0.125",
+			want:     CostUnknown,
 		},
 		{
-			name:     "multichannel with diarization",
+			name:     "nova-2 is no longer publicly priced",
+			duration: 600.0,
+			channels: 1,
+			opts:     Options{Model: "nova-2", Terms: []string{"Kubernetes"}},
+			want:     CostUnknown,
+		},
+		{
+			name:     "multichannel with diarization and keyterms",
 			duration: 300.0,
 			channels: 2,
-			opts:     Options{Model: "nova-3", Diarize: true},
-			want:     "$0.057",
+			opts:     Options{Model: "nova-3", DiarizeModel: DiarizeModelLatest, Terms: []string{"Kubernetes"}},
+			want:     "$0.056",
 		},
 		{
 			name:     "zero duration",
 			duration: 0.0,
 			channels: 1,
-			opts:     Options{Diarize: true},
+			opts:     Options{DiarizeModel: DiarizeModelLatest},
 			want:     "$0.000",
 		},
 	}

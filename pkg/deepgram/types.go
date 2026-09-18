@@ -1,14 +1,53 @@
 package deepgram
 
+import "strings"
+
+// DiarizeModelLatest selects the newest generally available batch diarizer,
+// which Deepgram currently resolves to v2. Deepgram documents `diarize_model`
+// as the parameter new integrations should send; the older `diarize=true`
+// boolean is deprecated, always routes to the v1 diarizer, and is rejected when
+// combined with `diarize_model`.
+const DiarizeModelLatest = "latest"
+
+// DefaultModel is the model Deepgram is asked for when a request names none.
+const DefaultModel = "nova-3"
+
 // Options defines configuration parameters for Deepgram transcription requests.
 type Options struct {
 	Model           string   // e.g. "nova-3", "nova-2"
 	Language        string   // e.g. "en", "en-US"
-	Diarize         bool     // enable speaker diarization
+	DiarizeModel    string   // diarizer to run, e.g. DiarizeModelLatest or "v1"; empty disables speaker diarization
 	SmartFormatting bool     // enable punctuation, formatting, dates, etc.
 	Utterances      bool     // group output into speaker utterances
 	Punctuate       bool     // enable explicit punctuation
 	Terms           []string // keyterms / keywords to improve transcription accuracy
+}
+
+// EffectiveModel returns the model Deepgram will actually run, which is the one
+// asked for or the default this client sends in its place. Both the request URL
+// and the cost estimate have to agree on that answer.
+func (o Options) EffectiveModel() string {
+	if model := strings.TrimSpace(o.Model); model != "" {
+		return model
+	}
+	return DefaultModel
+}
+
+// Diarized reports whether the request asks Deepgram to label who is speaking.
+func (o Options) Diarized() bool { return o.DiarizeModel != "" }
+
+// Keyterms returns the vocabulary actually worth sending: the terms with the
+// surrounding whitespace removed and the empty ones dropped. It is the single
+// answer to "does this request boost vocabulary", which decides both what goes
+// on the wire and whether Deepgram's keyterm prompting charge applies.
+func (o Options) Keyterms() []string {
+	keyterms := make([]string, 0, len(o.Terms))
+	for _, term := range o.Terms {
+		if cleaned := strings.TrimSpace(term); cleaned != "" {
+			keyterms = append(keyterms, cleaned)
+		}
+	}
+	return keyterms
 }
 
 // PreRecordedResponse represents the top-level JSON response from Deepgram's v1/listen endpoint.

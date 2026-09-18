@@ -16,11 +16,15 @@ func TestCacheKey(t *testing.T) {
 	opts1 := Options{Model: "nova-3", Terms: []string{"Go", "Kubernetes"}}
 	opts2 := Options{Model: "nova-3", Terms: []string{"Go", "Kubernetes"}}
 	opts3 := Options{Model: "nova-2", Terms: []string{"Go", "Kubernetes"}}
+	opts4 := Options{Model: "nova-3", Terms: []string{"Go", "Kubernetes"}, DiarizeModel: DiarizeModelLatest}
+	opts5 := Options{Model: "nova-3", Terms: []string{"Go", "Kubernetes"}, DiarizeModel: "v1"}
 
 	key1 := CacheKey(audio1, opts1)
 	key2 := CacheKey(audio1, opts2)
 	key3 := CacheKey(audio2, opts1)
 	key4 := CacheKey(audio1, opts3)
+	key5 := CacheKey(audio1, opts4)
+	key6 := CacheKey(audio1, opts5)
 
 	if key1 != key2 {
 		t.Errorf("expected identical keys for same audio & options, got %s vs %s", key1, key2)
@@ -32,6 +36,17 @@ func TestCacheKey(t *testing.T) {
 
 	if key1 == key4 {
 		t.Errorf("expected different keys for different model, got same %s", key1)
+	}
+
+	// A cached transcript produced without diarization cannot stand in for a
+	// diarized one, and the diarizers disagree on speaker labels between
+	// versions, so the diarizer selection has to reach the key.
+	if key1 == key5 {
+		t.Errorf("expected different keys when diarization is enabled, got same %s", key1)
+	}
+
+	if key5 == key6 {
+		t.Errorf("expected different keys for different diarizer versions, got same %s", key5)
 	}
 }
 

@@ -66,18 +66,15 @@ func BuildURL(baseEndpoint string, opts Options) string {
 
 	q := u.Query()
 
-	model := opts.Model
-	if model == "" {
-		model = "nova-3"
-	}
+	model := opts.EffectiveModel()
 	q.Set("model", model)
 
 	if opts.Language != "" {
 		q.Set("language", opts.Language)
 	}
 
-	if opts.Diarize {
-		q.Set("diarize", "true")
+	if opts.Diarized() {
+		q.Set("diarize_model", opts.DiarizeModel)
 	}
 
 	if opts.SmartFormatting {
@@ -97,15 +94,11 @@ func BuildURL(baseEndpoint string, opts Options) string {
 	// Nova-2, Nova-1, and Base use `keywords` parameter.
 	isNova3OrFlux := strings.HasPrefix(model, "nova-3") || strings.HasPrefix(model, "flux")
 
-	for _, term := range opts.Terms {
-		cleaned := strings.TrimSpace(term)
-		if cleaned == "" {
-			continue
-		}
+	for _, term := range opts.Keyterms() {
 		if isNova3OrFlux {
-			q.Add("keyterm", cleaned)
+			q.Add("keyterm", term)
 		} else {
-			q.Add("keywords", cleaned)
+			q.Add("keywords", term)
 		}
 	}
 

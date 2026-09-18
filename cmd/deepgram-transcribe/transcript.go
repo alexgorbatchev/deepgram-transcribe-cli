@@ -47,6 +47,15 @@ type transcriptOptions struct {
 	silenceDuration  string
 }
 
+// diarizeModel returns the Deepgram diarizer to run, or an empty string when the
+// caller asked for a transcript without speaker labels.
+func (o *transcriptOptions) diarizeModel() string {
+	if o.noDiarize {
+		return ""
+	}
+	return deepgram.DiarizeModelLatest
+}
+
 // wantsMono reports whether stereo audio should be merged into one channel,
 // which halves what Deepgram bills for the recording.
 func (o *transcriptOptions) wantsMono() bool { return !o.noPreprocess && !o.noMono }
@@ -204,7 +213,7 @@ func (r *transcriptRun) buildRequest() error {
 	r.request = deepgram.Options{
 		Model:           r.opts.model,
 		Language:        r.opts.language,
-		Diarize:         !r.opts.noDiarize,
+		DiarizeModel:    r.opts.diarizeModel(),
 		SmartFormatting: true,
 		Utterances:      true,
 		Punctuate:       true,
@@ -438,7 +447,7 @@ func (r *transcriptRun) writeTranscript() error {
 		Filename:  filepath.Base(r.audioPath),
 		FileSize:  formatFileSize(r.audioSize),
 		Model:     r.opts.model,
-		Diarized:  !r.opts.noDiarize,
+		Diarized:  r.request.Diarized(),
 		KeyTerms:  r.keyTerms,
 		Timestamp: time.Now(),
 	})
@@ -458,6 +467,14 @@ func (r *transcriptRun) writeTranscript() error {
 
 	if err := os.WriteFile(r.opts.outputFile, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("writing transcript to %q: %w", r.opts.outputFile, err)
+	}
+
+	if r.cost == deepgram.CostUnknown {
+		r.out.Success(
+			"Saved the transcript to %s. Deepgram does not publish a rate for the %s model, so what it cost will only be known once `job inspect` can read it from your bill.",
+			r.opts.outputFile, r.request.EffectiveModel(),
+		)
+		return nil
 	}
 
 	r.out.Success("Saved the transcript to %s, at a cost of %s.", r.opts.outputFile, r.cost)

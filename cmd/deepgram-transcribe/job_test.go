@@ -228,6 +228,38 @@ func TestJobInspectReportsStoredCost(t *testing.T) {
 	}
 }
 
+// TestJobInspectOmitsAnEstimateItCouldNotMake proves the report never dresses up
+// "no published rate for this model" as if it were a figure.
+func TestJobInspectOmitsAnEstimateItCouldNotMake(t *testing.T) {
+	cacheDir := t.TempDir()
+	server := newBillingServer(t, "proj-unknown", nil)
+
+	seedJob(t, cacheDir, deepgram.JobRecord{
+		RequestID:       "req-unpriced-1",
+		Filename:        "legacy.m4a",
+		Timestamp:       time.Date(2026, 3, 31, 14, 0, 0, 0, time.UTC),
+		DurationSeconds: 600,
+		Channels:        1,
+		Model:           "enhanced",
+		CostUSD:         deepgram.CostUnknown,
+	})
+
+	root, out, _ := newTestCLI(t, cacheDir, server.URL)
+	root.SetArgs([]string{"job", "inspect", "req-unpriced-1", "--api-key", "test-key"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("job inspect failed: %v", err)
+	}
+
+	details := out.String()
+	if strings.Contains(details, "estimated at") {
+		t.Errorf("expected no estimate to be quoted, got:\n%s", details)
+	}
+	if !strings.Contains(details, costPending) {
+		t.Errorf("expected the cost to read as not billed yet, got:\n%s", details)
+	}
+}
+
 func TestJobInspectFallsBackToTheEstimate(t *testing.T) {
 	cacheDir := t.TempDir()
 	server := newBillingServer(t, "proj-fallback", nil)

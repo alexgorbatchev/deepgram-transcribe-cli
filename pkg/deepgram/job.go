@@ -12,38 +12,64 @@ import (
 	"time"
 )
 
+// Deepgram's published pay-as-you-go list rates for pre-recorded audio, in US
+// dollars per minute of audio per channel.
 const (
-	// Default base rates per minute
-	BilledRatePerMinute   = 0.0043 // Nova-3, Nova-2, Nova-1, Flux default list rate
-	EnhancedRatePerMinute = 0.0145 // Enhanced model rate
-	BaseRatePerMinute     = 0.0125 // Base model rate
+	Nova3RatePerMinute             = 0.0043 // Nova-3 Monolingual
+	Nova3MultilingualRatePerMinute = 0.0052 // Nova-3 Multilingual, which `language=multi` selects
+	WhisperRatePerMinute           = 0.0048 // Whisper Large
 
-	// Add-on feature rates per minute
-	DiarizeRatePerMinute = 0.00137 // Diarization add-on
+	// KeytermRatePerMinute is the list rate for Deepgram's keyterm prompting
+	// add-on on pre-recorded audio. It is the only add-on this tool turns on
+	// that Deepgram charges for: smart formatting is included, and speaker
+	// diarization is billed on streaming audio only, not on pre-recorded.
+	KeytermRatePerMinute = 0.0013
 )
 
-// CalculateCostUSD calculates estimated Deepgram transcription cost formatted as "$X.XXX".
-func CalculateCostUSD(durationSeconds float64, channels int) string {
-	return CalculateCostWithOptions(durationSeconds, channels, Options{})
+// CostUnknown stands in for an estimate that cannot be made honestly. Deepgram's
+// rate card prices only the models above; Nova-2, Nova-1, Enhanced and Base are
+// still accepted by the API but no longer appear on it, and a stale number
+// presented as a cost is worse than admitting there is none. What Deepgram
+// actually charged still arrives later from the billing API.
+const CostUnknown = "unknown"
+
+// listRatePerMinute returns Deepgram's published pre-recorded rate for the model
+// a request asks for, and false when Deepgram publishes no rate for it.
+func listRatePerMinute(opts Options) (float64, bool) {
+	model := strings.ToLower(opts.EffectiveModel())
+
+	switch {
+	case strings.HasPrefix(model, "nova-3"):
+		// The multilingual model is a separate, dearer line on the rate card,
+		// and `language=multi` is what selects it.
+		if strings.EqualFold(strings.TrimSpace(opts.Language), "multi") {
+			return Nova3MultilingualRatePerMinute, true
+		}
+		return Nova3RatePerMinute, true
+	case strings.HasPrefix(model, "whisper"):
+		return WhisperRatePerMinute, true
+	default:
+		return 0, false
+	}
 }
 
 // CalculateCostWithOptions calculates estimated Deepgram transcription cost factoring in model rates and feature add-ons.
+//
+// The result is an estimate against Deepgram's published pay-as-you-go list
+// prices, so it ignores negotiated or volume rates. `job list` and `job inspect`
+// replace it with what Deepgram actually charged as soon as that is available.
 func CalculateCostWithOptions(durationSeconds float64, channels int, opts Options) string {
 	if channels < 1 {
 		channels = 1
 	}
 
-	ratePerMinute := BilledRatePerMinute
-
-	modelLower := strings.ToLower(opts.Model)
-	if strings.Contains(modelLower, "enhanced") {
-		ratePerMinute = EnhancedRatePerMinute
-	} else if strings.HasPrefix(modelLower, "base") {
-		ratePerMinute = BaseRatePerMinute
+	ratePerMinute, priced := listRatePerMinute(opts)
+	if !priced {
+		return CostUnknown
 	}
 
-	if opts.Diarize {
-		ratePerMinute += DiarizeRatePerMinute
+	if len(opts.Keyterms()) > 0 {
+		ratePerMinute += KeytermRatePerMinute
 	}
 
 	cost := (durationSeconds / 60.0) * float64(channels) * ratePerMinute

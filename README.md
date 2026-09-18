@@ -23,12 +23,13 @@
 # How it Really Works
 
 - Commands are built on Cobra with a subject-verb hierarchy (`transcript create`, `job list`, `job inspect`, `cache status`, `cache clear`), and help screens are rendered as aligned command trees trimmed to the terminal width.
-- Transcription posts the audio to Deepgram's pre-recorded REST endpoint (`POST /v1/listen`) with `diarize`, `smart_format`, `utterances` and `punctuate` enabled, and no paid intelligence add-ons.
-- Vocabulary is sent as `keyterm` parameters for `nova-3` and `flux`, and as `keywords` for the older `nova-2`, `nova-1` and `base` models.
+- Transcription posts the audio to Deepgram's pre-recorded REST endpoint (`POST /v1/listen`) with `diarize_model=latest`, `smart_format`, `utterances` and `punctuate` enabled, and no paid intelligence add-ons.
+- Vocabulary is sent as `keyterm` parameters for `nova-3` and `flux`, and as `keywords` for the older `nova-2`, `nova-1` and `base` models. Keyterm prompting is the one billed add-on this tool turns on; speaker diarization and smart formatting are included in the model rate on pre-recorded audio.
 - Two SHA-256 keys index the local store: one over the raw audio bytes, and one over the audio plus the request options. The first detects the same recording under different settings, the second detects an identical request.
 - Responses and job metadata are stored together as a single JSON envelope per key, under `$XDG_CACHE_HOME/deepgram-transcribe` or `~/.cache/deepgram-transcribe`.
 - Audio preprocessing shells out to `ffmpeg`, using `-ac 1` for the downmix and the `silenceremove` filter for dead air, and is skipped entirely on a cache hit.
 - Billed costs come from Deepgram's management API (`GET /v1/projects/{project}/requests/{request}`), are fetched concurrently for a listing, and are written back so each request is only ever asked about once.
+- Until a real charge is available, cost is estimated from Deepgram's published pay-as-you-go list rates, which cover Nova-3 monolingual, Nova-3 multilingual (`--language multi`) and Whisper Large. Models Deepgram no longer prices publicly — Nova-2, Nova-1, Enhanced and Base — report an unknown cost rather than a made-up one, until the real charge arrives.
 - Transcripts go to stdout and all progress goes to stderr, so redirecting stdout captures the Markdown alone.
 
 # Prerequisites

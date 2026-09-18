@@ -25,7 +25,7 @@ func TestBuildURL(t *testing.T) {
 	opts := Options{
 		Model:           "nova-3",
 		Language:        "en",
-		Diarize:         true,
+		DiarizeModel:    DiarizeModelLatest,
 		SmartFormatting: true,
 		Utterances:      true,
 		Punctuate:       true,
@@ -38,8 +38,8 @@ func TestBuildURL(t *testing.T) {
 		t.Errorf("expected URL to contain model=nova-3, got %s", urlStr)
 	}
 
-	if !strings.Contains(urlStr, "diarize=true") {
-		t.Errorf("expected URL to contain diarize=true, got %s", urlStr)
+	if !strings.Contains(urlStr, "diarize_model=latest") {
+		t.Errorf("expected URL to contain diarize_model=latest, got %s", urlStr)
 	}
 
 	if !strings.Contains(urlStr, "smart_format=true") {
@@ -48,6 +48,43 @@ func TestBuildURL(t *testing.T) {
 
 	if !strings.Contains(urlStr, "keyterm=Go") || !strings.Contains(urlStr, "keyterm=Envoy") || !strings.Contains(urlStr, "keyterm=Alex") {
 		t.Errorf("expected URL to contain keyterm parameters, got %s", urlStr)
+	}
+}
+
+// TestBuildURLDiarizeModel pins the diarization parameter to Deepgram's current
+// contract: `diarize_model` carries both the on/off decision and the diarizer
+// version, and the deprecated `diarize` boolean must never be sent alongside it
+// because Deepgram rejects requests that set both.
+func TestBuildURLDiarizeModel(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+		want  string
+	}{
+		{"latest diarizer", DiarizeModelLatest, "diarize_model=latest"},
+		{"pinned diarizer", "v1", "diarize_model=v1"},
+		{"diarization off", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			urlStr := BuildURL("https://api.deepgram.com/v1/listen", Options{Model: "nova-3", DiarizeModel: tt.model})
+
+			if tt.want == "" {
+				if strings.Contains(urlStr, "diarize") {
+					t.Errorf("expected no diarization parameter, got %s", urlStr)
+				}
+				return
+			}
+
+			if !strings.Contains(urlStr, tt.want) {
+				t.Errorf("expected URL to contain %s, got %s", tt.want, urlStr)
+			}
+
+			if strings.Contains(urlStr, "diarize=") {
+				t.Errorf("expected the deprecated diarize parameter to be absent, got %s", urlStr)
+			}
+		})
 	}
 }
 
