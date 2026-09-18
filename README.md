@@ -4,7 +4,7 @@
 
 - **Readable transcripts**: Produces Markdown with a metadata table, speaker turns (`### Speaker 0 (00:00 - 00:15)`) and timestamps.
 - **Speaker diarization**: Separates and labels each speaker in the audio.
-- **Engineering keyterms**: Ships with 80+ common engineering and system design terms, so technical vocabulary is recognised correctly.
+- **Engineering keyterms**: Ships with a built-in vocabulary of engineering and system design terms, so technical words are recognised correctly.
 - **Your own keyterms**: Add company, people or product names with `--term` or `--terms-file`.
 - **Response caching**: Caches Deepgram responses keyed by audio content, and serves them on repeated requests even when the request options have changed, so the same audio is never billed twice.
 - **Cheaper uploads**: Merges stereo to mono and cuts dead air before uploading, which roughly halves the billed audio.
@@ -22,15 +22,14 @@
 
 # How it Really Works
 
-- Commands are built on Cobra with a subject-verb hierarchy (`transcript create`, `job list`, `job inspect`, `cache status`, `cache clear`), and help screens are rendered as aligned command trees trimmed to the terminal width.
-- Transcription posts the audio to Deepgram's pre-recorded REST endpoint (`POST /v1/listen`) with `diarize_model=latest`, `smart_format`, `utterances` and `punctuate` enabled, and no paid intelligence add-ons.
-- Vocabulary is sent as `keyterm` parameters for `nova-3` and `flux`, and as `keywords` for the older `nova-2`, `nova-1` and `base` models. Keyterm prompting is the one billed add-on this tool turns on; speaker diarization and smart formatting are included in the model rate on pre-recorded audio.
-- Two SHA-256 keys index the local store: one over the raw audio bytes, and one over the audio plus the request options. The first detects the same recording under different settings, the second detects an identical request.
-- Responses and job metadata are stored together as a single JSON envelope per key, under `$XDG_CACHE_HOME/deepgram-transcribe` or `~/.cache/deepgram-transcribe`.
-- Audio preprocessing shells out to `ffmpeg`, using `-ac 1` for the downmix and the `silenceremove` filter for dead air, and is skipped entirely on a cache hit.
-- Billed costs come from Deepgram's management API (`GET /v1/projects/{project}/requests/{request}`), are fetched concurrently for a listing, and are written back so each request is only ever asked about once.
-- Until a real charge is available, cost is estimated from Deepgram's published pay-as-you-go list rates, which cover Nova-3 monolingual, Nova-3 multilingual (`--language multi`) and Whisper Large. Models Deepgram no longer prices publicly — Nova-2, Nova-1, Enhanced and Base — report an unknown cost rather than a made-up one, until the real charge arrives.
-- Transcripts go to stdout and all progress goes to stderr, so redirecting stdout captures the Markdown alone.
+- Transcription posts the audio to Deepgram's pre-recorded REST endpoint (`POST /v1/listen`), asking for speaker diarization, smart formatting, utterance segmentation and punctuation. No intelligence add-ons such as summarisation or sentiment are requested.
+- Keyterms travel as `keyterm` query parameters on `nova-3` and `flux`, and as `keywords` on the older model families, which is the same distinction Deepgram's API draws.
+- Two SHA-256 keys index the cache: one over the raw audio bytes, one over the audio plus the request options. The first recognises the same audio under changed options, the second recognises an identical request.
+- A response and its job record are stored together as a single JSON envelope per key, under `$XDG_CACHE_HOME/deepgram-transcribe` or `~/.cache/deepgram-transcribe`.
+- Preprocessing shells out to `ffmpeg`, using `-ac 1` to downmix and the `silenceremove` filter to cut dead air, and is skipped entirely on a cache hit, so a repeat request touches neither ffmpeg nor the network.
+- What a request was actually billed comes from Deepgram's management API, is fetched concurrently when listing history, and is written back so the same request is never looked up twice.
+- Until that real charge arrives, cost is estimated from a published rate compiled into the binary, and a model with no published rate reports an unknown cost rather than a guess. The estimate ignores negotiated and volume pricing, and published rates change, so [Deepgram's pricing page](https://deepgram.com/pricing) is the authority and `job inspect` is what reports the real charge.
+- The transcript goes to stdout and everything else to stderr, so redirecting stdout captures the Markdown alone.
 
 # Prerequisites
 
