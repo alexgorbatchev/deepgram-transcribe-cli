@@ -19,6 +19,7 @@ func TestSaveAndGetJobRecord(t *testing.T) {
 		DurationSeconds: 930.4,
 		Channels:        1,
 		Model:           "nova-3",
+		DiarizeModel:    DiarizeModelLatest,
 		Preprocessed:    true,
 		CostUSD:         "$0.067",
 	}
@@ -35,6 +36,11 @@ func TestSaveAndGetJobRecord(t *testing.T) {
 	}
 	if gotBySHA.RequestID != "req-999-abc" {
 		t.Errorf("expected RequestID 'req-999-abc', got %q", gotBySHA.RequestID)
+	}
+	// A stored job has to describe the request that produced it, or its cost can
+	// never be re-derived and `job inspect` cannot say how it was transcribed.
+	if gotBySHA.DiarizeModel != DiarizeModelLatest {
+		t.Errorf("expected DiarizeModel %q, got %q", DiarizeModelLatest, gotBySHA.DiarizeModel)
 	}
 	if gotBySHA.CostUSD != "$0.067" {
 		t.Errorf("expected CostUSD '$0.067', got %q", gotBySHA.CostUSD)

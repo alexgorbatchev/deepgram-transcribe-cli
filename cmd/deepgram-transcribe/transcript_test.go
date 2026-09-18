@@ -97,6 +97,9 @@ func TestTranscriptCreateWritesTranscriptAndRecordsJob(t *testing.T) {
 	if records[0].Channels != 1 {
 		t.Errorf("expected the channel count Deepgram reported, got %d", records[0].Channels)
 	}
+	if records[0].DiarizeModel != deepgram.DiarizeModelLatest {
+		t.Errorf("expected the diarizer that was requested, got %q", records[0].DiarizeModel)
+	}
 }
 
 // TestTranscriptCreateSaysWhenItCannotEstimateTheCost covers a model Deepgram

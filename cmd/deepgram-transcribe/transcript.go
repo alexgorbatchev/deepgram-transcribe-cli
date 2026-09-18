@@ -430,6 +430,7 @@ func (r *transcriptRun) recordJob() {
 		DurationSeconds: duration,
 		Channels:        channels,
 		Model:           r.opts.model,
+		DiarizeModel:    r.request.DiarizeModel,
 		Preprocessed:    r.opts.wantsMono() || r.opts.wantsTrimSilence(),
 		Terms:           r.keyTerms,
 		CostUSD:         r.cost,

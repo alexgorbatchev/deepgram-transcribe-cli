@@ -87,6 +87,7 @@ type JobRecord struct {
 	DurationSeconds float64   `json:"duration_seconds"`
 	Channels        int       `json:"channels"`
 	Model           string    `json:"model"`
+	DiarizeModel    string    `json:"diarize_model,omitempty"`
 	Preprocessed    bool      `json:"preprocessed"`
 	Terms           []string  `json:"terms,omitempty"`
 	CostUSD         string    `json:"cost_usd"`

@@ -164,7 +164,8 @@ func runJobInspect(cmd *cobra.Command, g *globalOptions, target string) error {
 		Add("Duration", "%s", deepgram.FormatSeconds(record.DurationSeconds)).
 		Add("Channels", "%d", record.Channels).
 		Add("Made smaller first", "%t", record.Preprocessed).
-		Add("Model", "%s", record.Model)
+		Add("Model", "%s", record.Model).
+		Add("Speaker labels", "%s", describeDiarizer(record.DiarizeModel))
 
 	switch {
 	case record.CostIsActual:
@@ -180,6 +181,16 @@ func runJobInspect(cmd *cobra.Command, g *globalOptions, target string) error {
 	fields.Render()
 
 	return nil
+}
+
+// describeDiarizer says which diarizer produced a job's speaker numbers. The
+// answer matters when comparing two transcripts of the same recording, because
+// the diarizers disagree about where one speaker ends and the next begins.
+func describeDiarizer(diarizeModel string) string {
+	if diarizeModel == "" {
+		return "not requested"
+	}
+	return fmt.Sprintf("%s diarizer", diarizeModel)
 }
 
 // refreshActualCosts fills in what Deepgram really charged for any record that

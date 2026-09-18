@@ -228,6 +228,61 @@ func TestJobInspectReportsStoredCost(t *testing.T) {
 	}
 }
 
+// TestJobInspectReportsHowSpeakersWereLabelled proves a stored job can say which
+// diarizer produced its speaker numbers, which is what makes two transcripts of
+// the same recording comparable.
+func TestJobInspectReportsHowSpeakersWereLabelled(t *testing.T) {
+	cacheDir := t.TempDir()
+	seedJob(t, cacheDir, deepgram.JobRecord{
+		RequestID:       "req-diarizer-1",
+		Filename:        "labelled.m4a",
+		Timestamp:       time.Date(2026, 3, 31, 14, 0, 0, 0, time.UTC),
+		DurationSeconds: 600,
+		Channels:        1,
+		Model:           "nova-3",
+		DiarizeModel:    deepgram.DiarizeModelLatest,
+		CostUSD:         "$0.043",
+		CostIsActual:    true,
+	})
+
+	root, out, _ := newTestCLI(t, cacheDir, "")
+	root.SetArgs([]string{"job", "inspect", "req-diarizer-1"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("job inspect failed: %v", err)
+	}
+
+	details := out.String()
+	if !strings.Contains(details, "Speaker labels") || !strings.Contains(details, deepgram.DiarizeModelLatest) {
+		t.Errorf("expected the diarizer that was used, got:\n%s", details)
+	}
+}
+
+func TestJobInspectSaysWhenSpeakersWereNotLabelled(t *testing.T) {
+	cacheDir := t.TempDir()
+	seedJob(t, cacheDir, deepgram.JobRecord{
+		RequestID:       "req-diarizer-2",
+		Filename:        "plain.m4a",
+		Timestamp:       time.Date(2026, 3, 31, 14, 0, 0, 0, time.UTC),
+		DurationSeconds: 600,
+		Channels:        1,
+		Model:           "nova-3",
+		CostUSD:         "$0.043",
+		CostIsActual:    true,
+	})
+
+	root, out, _ := newTestCLI(t, cacheDir, "")
+	root.SetArgs([]string{"job", "inspect", "req-diarizer-2"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("job inspect failed: %v", err)
+	}
+
+	if details := out.String(); !strings.Contains(details, "Speaker labels") || !strings.Contains(details, "not requested") {
+		t.Errorf("expected the report to say speakers were not labelled, got:\n%s", details)
+	}
+}
+
 // TestJobInspectOmitsAnEstimateItCouldNotMake proves the report never dresses up
 // "no published rate for this model" as if it were a figure.
 func TestJobInspectOmitsAnEstimateItCouldNotMake(t *testing.T) {
