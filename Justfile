@@ -23,6 +23,11 @@ run-ai *args: build
 test:
 	go test -race ./...
 
+# Update Go module dependencies to their newest versions
+update-deps:
+	go get -u ./...
+	go mod tidy
+
 # Check formatting and run static analysis
 lint:
 	gofmt -l .
