@@ -2,26 +2,65 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/alexgorbatchev/godeps"
 	"github.com/spf13/cobra"
 
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/internal/cliout"
 )
 
+// ffmpegVersionOutput is what a healthy, current ffmpeg prints for -version.
+const ffmpegVersionOutput = "ffmpeg version 7.1.1 Copyright (c) 2000-2024 the FFmpeg developers\nbuilt with clang\n"
+
+// errFFmpegMissing is what running a program that is not on PATH returns.
+var errFFmpegMissing = errors.New("exec: \"ffmpeg\": executable file not found in $PATH")
+
+// stubRunner answers a version query with output, or fails with err so that the
+// program looks missing. Tests must never run the real ffmpeg, because what is
+// installed on the machine must not decide whether the suite passes.
+func stubRunner(output string, err error) godeps.CommandRunner {
+	return func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if err != nil {
+			return nil, err
+		}
+		return []byte(output), nil
+	}
+}
+
 // newTestCLI builds a root command wired to buffers and to a stub Deepgram
-// endpoint, with the environment neutralised so that a developer's own API key,
-// agent mode or terminal width cannot change the result.
+// endpoint, with a healthy ffmpeg reported.
 func newTestCLI(t *testing.T, cacheDir, endpoint string) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+
+	return newTestCLIWithRunner(t, cacheDir, endpoint, stubRunner(ffmpegVersionOutput, nil))
+}
+
+// newTestCLIWithRunner is newTestCLI with control over what the external
+// programs report, and with the environment neutralised so that a developer's
+// own API key, agent mode, terminal width or installed tools cannot change the
+// result.
+func newTestCLIWithRunner(t *testing.T, cacheDir, endpoint string, runner godeps.CommandRunner) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
 
 	t.Setenv(apiKeyEnvVar, "")
 	t.Setenv("AGENT", "")
 	t.Setenv("COLUMNS", "200")
+	// Keep the managed bin directory inside the test, and register PATH so the
+	// test framework restores it after godeps prepends to it.
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("PATH", os.Getenv("PATH"))
 
 	var out, errOut bytes.Buffer
-	root := newRootCmd(&globalOptions{defaultCacheDir: cacheDir, endpoint: endpoint})
+	root := newRootCmd(&globalOptions{
+		defaultCacheDir: cacheDir,
+		endpoint:        endpoint,
+		depsRunner:      runner,
+	})
 	root.SetOut(&out)
 	root.SetErr(&errOut)
 
@@ -56,6 +95,10 @@ func TestRootCommandUsesSubjectVerbStructure(t *testing.T) {
 		"deepgram-transcribe cache",
 		"deepgram-transcribe cache clear",
 		"deepgram-transcribe cache status",
+		"deepgram-transcribe dependency",
+		"deepgram-transcribe dependency install",
+		"deepgram-transcribe dependency list",
+		"deepgram-transcribe dependency update",
 		"deepgram-transcribe job",
 		"deepgram-transcribe job inspect",
 		"deepgram-transcribe job list",

@@ -4,8 +4,10 @@ import (
 	"os"
 
 	cobrahelptree "github.com/alexgorbatchev/cobra-help-tree"
+	"github.com/alexgorbatchev/godeps"
 	"github.com/spf13/cobra"
 
+	"github.com/alexgorbatchev/deepgram-transcribe-cli/internal/deps"
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/deepgram"
 )
 
@@ -28,6 +30,17 @@ type globalOptions struct {
 	// endpoint redirects Deepgram calls to a stub server. It is set only by
 	// tests, which must never reach the real service.
 	endpoint string
+
+	// depsRunner stands in for running the external programs this CLI depends
+	// on. It is set only by tests, so that no test depends on what happens to be
+	// installed on the machine running it.
+	depsRunner godeps.CommandRunner
+}
+
+// newDependencyManager returns the manager for the external programs this CLI
+// needs, such as ffmpeg.
+func (g *globalOptions) newDependencyManager() *godeps.Manager {
+	return deps.NewManager(g.depsRunner)
 }
 
 // resolvedCacheDir returns the folder that transcripts are read from and saved to.
@@ -83,6 +96,12 @@ twice is free, and it can tell you what each recording cost to transcribe.`,
 			// anything that fails from here on is a runtime problem that the
 			// usage screen would only bury.
 			cmd.SilenceUsage = true
+
+			// Put the managed bin directory on PATH so that a program this tool
+			// installed earlier is found. Failing to do so only means the
+			// managed copy is not visible, which every command reports in its
+			// own terms, so it is not worth stopping for here.
+			_ = deps.InitPath()
 		},
 	}
 
@@ -95,6 +114,7 @@ twice is free, and it can tell you what each recording cost to transcribe.`,
 
 	root.AddCommand(
 		newCacheCmd(g),
+		newDependencyCmd(g),
 		newJobCmd(g),
 		newTranscriptCmd(g),
 	)

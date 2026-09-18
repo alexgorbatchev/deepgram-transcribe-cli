@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/internal/cliout"
+	"github.com/alexgorbatchev/deepgram-transcribe-cli/internal/deps"
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/audio"
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/deepgram"
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/markdown"
@@ -256,6 +257,34 @@ func (r *transcriptRun) reuseSavedTranscript() {
 	r.response = envelope.Response
 }
 
+// ffmpegReady reports whether ffmpeg can be used to shrink the recording, and
+// explains on stderr when it cannot.
+//
+// A missing or outdated ffmpeg is not fatal. The recording is uploaded as it is,
+// which costs more but still produces a transcript, so this reports the problem
+// and lets the run continue.
+func (r *transcriptRun) ffmpegReady() bool {
+	// Verify returns an error when anything is unsatisfied. Only ffmpeg matters
+	// here, so the report for it is what decides, not the overall result.
+	reports, _ := r.global.newDependencyManager().Verify(r.cmd.Context())
+
+	report, found := deps.Find(reports, deps.FFmpeg)
+	if found && report.Satisfied {
+		return true
+	}
+
+	if found && report.Error != "" {
+		r.out.Warn("%s", report.Error)
+	} else {
+		r.out.Warn("ffmpeg is not usable.")
+	}
+
+	r.out.Status("The recording will be uploaded as it is, which costs more.")
+	r.out.Hint("Run `deepgram-transcribe dependency install` to set ffmpeg up.")
+
+	return false
+}
+
 // prepareUpload makes the recording cheaper to transcribe by merging stereo into
 // one channel and cutting long silences. It is skipped when a saved transcript
 // already answered the request, because nothing will be uploaded.
@@ -272,9 +301,7 @@ func (r *transcriptRun) prepareUpload() (func(), error) {
 		return noCleanup, nil
 	}
 
-	if !audio.IsFFmpegAvailable() {
-		r.out.Warn("ffmpeg was not found, so the recording will be uploaded as it is.")
-		r.out.Hint("Install ffmpeg to cut the amount of audio you are billed for.")
+	if !r.ffmpegReady() {
 		return noCleanup, nil
 	}
 

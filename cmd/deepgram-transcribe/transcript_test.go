@@ -226,6 +226,37 @@ func TestTranscriptCreateForceIgnoresSavedTranscript(t *testing.T) {
 	}
 }
 
+// TestTranscriptCreateContinuesWithoutFFmpeg proves that a missing ffmpeg costs
+// the user money rather than the transcript: the recording is uploaded at full
+// size, and the run still succeeds.
+func TestTranscriptCreateContinuesWithoutFFmpeg(t *testing.T) {
+	server := newTranscribeServer(t, transcribeResponseJSON)
+	audioPath := writeAudio(t, t.TempDir(), "interview.m4a", "fake audio content")
+
+	root, out, errOut := newTestCLIWithRunner(t, t.TempDir(), server.URL, stubRunner("", errFFmpegMissing))
+	// Preprocessing is left on, so the run has to decide what to do about ffmpeg.
+	root.SetArgs([]string{"transcript", "create", audioPath, "--api-key", "test-key"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("expected the transcript to be produced without ffmpeg, got: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "Hello world from Deepgram") {
+		t.Errorf("expected the transcript on stdout, got: %s", out.String())
+	}
+
+	stderr := errOut.String()
+	if !strings.Contains(stderr, "ffmpeg") {
+		t.Errorf("expected ffmpeg to be named in the warning, got: %s", stderr)
+	}
+	if !strings.Contains(stderr, "uploaded as it is") {
+		t.Errorf("expected the consequence to be explained, got: %s", stderr)
+	}
+	if !strings.Contains(stderr, "dependency install") {
+		t.Errorf("expected a hint pointing at dependency install, got: %s", stderr)
+	}
+}
+
 func TestTranscriptCreateExplainsMissingAPIKey(t *testing.T) {
 	audioPath := writeAudio(t, t.TempDir(), "interview.m4a", "audio without a key")
 
