@@ -92,7 +92,7 @@ func TestPreprocessAudioNoOp(t *testing.T) {
 }
 
 func TestPreprocessAudioWithFFmpeg(t *testing.T) {
-	if !IsFFmpegAvailable() {
+	if !isFFmpegAvailable() {
 		t.Skip("ffmpeg not found on system PATH, skipping integration test")
 	}
 

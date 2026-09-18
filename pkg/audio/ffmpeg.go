@@ -24,8 +24,12 @@ type PreprocessOptions struct {
 	SilenceDuration  string // e.g. "2.0" (seconds)
 }
 
-// IsFFmpegAvailable checks if ffmpeg binary exists on the system PATH.
-func IsFFmpegAvailable() bool {
+// isFFmpegAvailable reports whether the ffmpeg binary is on PATH.
+//
+// This is a guard for PreprocessAudio's own use. Deciding whether ffmpeg is fit
+// to run belongs to the caller, which checks the declared minimum version
+// through internal/deps rather than merely asking whether some ffmpeg exists.
+func isFFmpegAvailable() bool {
 	_, err := exec.LookPath("ffmpeg")
 	return err == nil
 }
@@ -64,7 +68,7 @@ func PreprocessAudio(ctx context.Context, inputPath string, opts PreprocessOptio
 		return inputPath, noCleanup, nil
 	}
 
-	if !IsFFmpegAvailable() {
+	if !isFFmpegAvailable() {
 		return "", noCleanup, fmt.Errorf("ffmpeg is required for audio preprocessing (--mono / --trim-silence) but was not found on system PATH")
 	}
 
