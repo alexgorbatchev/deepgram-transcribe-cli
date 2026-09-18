@@ -6,8 +6,10 @@ import (
 	"errors"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/alexgorbatchev/godeps"
 	"github.com/spf13/cobra"
@@ -383,6 +385,49 @@ func TestHelpCatalogKeysMatchRealCommands(t *testing.T) {
 		if !known[path] {
 			t.Errorf("help catalog documents %q, which is not a command in the tree", path)
 		}
+	}
+}
+
+// TestHelpFitsTheTerminalWidth guards the whole help screen, not just the parts
+// the renderer clips. A line wider than the terminal wraps, and a wrapped line
+// destroys the description column the tree exists to provide.
+//
+// Eighty columns is the conventional minimum, and the command descriptions in
+// this CLI are written to fit it. Width is counted in runes, which equals
+// terminal cells here because the screens hold ASCII and single-cell box-drawing
+// glyphs only.
+func TestHelpFitsTheTerminalWidth(t *testing.T) {
+	const columns = 80
+
+	for _, args := range [][]string{
+		{"--help"},
+		{"dependency", "--help"},
+		{"job", "inspect", "--help"},
+		{"transcript", "create", "--help"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			root, out, _ := newTestCLI(t, t.TempDir(), "")
+			t.Setenv("COLUMNS", strconv.Itoa(columns))
+			root.SetArgs(args)
+
+			if err := root.Execute(); err != nil {
+				t.Fatalf("%v failed: %v", args, err)
+			}
+
+			for _, line := range strings.Split(out.String(), "\n") {
+				// cobra-help-tree emits this footer verbatim, interpolating the
+				// command path, and wraps neither it nor its own width budget
+				// around it. Reported upstream as the lesser half of
+				// alexgorbatchev/cobra-help-tree#3; nothing here can shorten it.
+				if strings.HasPrefix(line, `Use "`) {
+					continue
+				}
+
+				if width := utf8.RuneCountInString(line); width > columns {
+					t.Errorf("line is %d cells wide, over the %d column budget: %q", width, columns, line)
+				}
+			}
+		})
 	}
 }
 

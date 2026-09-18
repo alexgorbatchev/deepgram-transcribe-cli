@@ -82,13 +82,13 @@ func newTranscriptCreateCmd(g *globalOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create <audio-file>",
 		Short: "Transcribe an audio file to Markdown",
-		Long: `Transcribe the speech in an audio file to Markdown, labelled with who is speaking.
+		Long: `Transcribe the speech in an audio file to Markdown, labelled by speaker.
 
 The transcript is written to stdout unless --output names a file, so it can be
 redirected:
 
   deepgram-transcribe transcript create interview.m4a > interview.md
-  deepgram-transcribe transcript create interview.m4a -t Envoy -t Alex -o interview.md`,
+  deepgram-transcribe transcript create interview.m4a -t Envoy -o notes.md`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runTranscriptCreate(cmd, g, opts, args[0])
