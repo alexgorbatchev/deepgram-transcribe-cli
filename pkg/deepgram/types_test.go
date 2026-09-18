@@ -30,6 +30,7 @@ func TestPreRecordedResponseUnmarshal(t *testing.T) {
 									"end": 0.9,
 									"confidence": 0.99,
 									"speaker": 0,
+									"speaker_confidence": 0.91,
 									"punctuated_word": "Hello,"
 								},
 								{
@@ -53,6 +54,7 @@ func TestPreRecordedResponseUnmarshal(t *testing.T) {
 					"channel": 0,
 					"transcript": "Hello, welcome to Envoy.",
 					"speaker": 0,
+					"speaker_confidence": 0.93,
 					"words": [
 						{
 							"word": "Hello",
@@ -97,6 +99,16 @@ func TestPreRecordedResponseUnmarshal(t *testing.T) {
 
 	if resp.Results.Utterances[0].Speaker != 0 {
 		t.Errorf("utterance 0 speaker = %d, want 0", resp.Results.Utterances[0].Speaker)
+	}
+
+	// The v2 batch diarizer reports how sure it is of each speaker attribution,
+	// separately from how sure it is of the words themselves.
+	if resp.Results.Utterances[0].SpeakerConfidence != 0.93 {
+		t.Errorf("utterance 0 speaker confidence = %f, want 0.93", resp.Results.Utterances[0].SpeakerConfidence)
+	}
+
+	if got := resp.Results.Channels[0].Alternatives[0].Words[0].SpeakerConfidence; got != 0.91 {
+		t.Errorf("word 0 speaker confidence = %f, want 0.91", got)
 	}
 
 	if resp.Results.Utterances[1].Speaker != 1 {

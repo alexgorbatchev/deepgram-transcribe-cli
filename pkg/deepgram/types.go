@@ -45,22 +45,28 @@ type Alternative struct {
 }
 
 // Utterance represents a single continuous speech segment attributed to a specific speaker.
+//
+// Confidence and SpeakerConfidence answer different questions: the first is how
+// sure Deepgram is of the words, the second how sure it is that this speaker
+// said them. Only the batch diarizer reports the second one; streaming omits it.
 type Utterance struct {
-	Start      float64 `json:"start"`
-	End        float64 `json:"end"`
-	Confidence float64 `json:"confidence"`
-	Channel    int     `json:"channel"`
-	Speaker    int     `json:"speaker"`
-	Transcript string  `json:"transcript"`
-	Words      []Word  `json:"words"`
+	Start             float64 `json:"start"`
+	End               float64 `json:"end"`
+	Confidence        float64 `json:"confidence"`
+	SpeakerConfidence float64 `json:"speaker_confidence"`
+	Channel           int     `json:"channel"`
+	Speaker           int     `json:"speaker"`
+	Transcript        string  `json:"transcript"`
+	Words             []Word  `json:"words"`
 }
 
 // Word contains details and timestamps for an individual recognized word.
 type Word struct {
-	Word           string  `json:"word"`
-	Start          float64 `json:"start"`
-	End            float64 `json:"end"`
-	Confidence     float64 `json:"confidence"`
-	Speaker        int     `json:"speaker"`
-	PunctuatedWord string  `json:"punctuated_word"`
+	Word              string  `json:"word"`
+	Start             float64 `json:"start"`
+	End               float64 `json:"end"`
+	Confidence        float64 `json:"confidence"`
+	Speaker           int     `json:"speaker"`
+	SpeakerConfidence float64 `json:"speaker_confidence"`
+	PunctuatedWord    string  `json:"punctuated_word"`
 }
