@@ -25,7 +25,7 @@ const (
 	defaultLanguage = "en"
 
 	// termsSummaryLimit caps how many words are listed when explaining that a
-	// saved transcript was made with a different vocabulary.
+	// cached response was requested with different keyterms.
 	termsSummaryLimit = 10
 )
 
@@ -58,7 +58,7 @@ func (o *transcriptOptions) wantsTrimSilence() bool { return !o.noPreprocess && 
 func newTranscriptCmd(g *globalOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "transcript",
-		Short: "Create transcripts from recorded audio",
+		Short: "Create transcripts from audio",
 	}
 
 	cmd.AddCommand(newTranscriptCreateCmd(g))
@@ -72,11 +72,11 @@ func newTranscriptCreateCmd(g *globalOptions) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "create <audio-file>",
-		Short: "Turn a recording into a Markdown transcript",
-		Long: `Turn a recording into a Markdown transcript, labelled with who is speaking.
+		Short: "Transcribe an audio file to Markdown",
+		Long: `Transcribe the speech in an audio file to Markdown, labelled with who is speaking.
 
-The transcript is printed to the screen unless you name a file to write with
---output, so it can be redirected:
+The transcript is written to stdout unless --output names a file, so it can be
+redirected:
 
   deepgram-transcribe transcript create interview.m4a > interview.md
   deepgram-transcribe transcript create interview.m4a -t Envoy -t Alex -o interview.md`,
@@ -87,26 +87,26 @@ The transcript is printed to the screen unless you name a file to write with
 	}
 
 	flags := cmd.Flags()
-	flags.StringArrayVarP(&opts.extraTerms, "term", "t", nil, "Extra word or name to listen for, such as a company or a person (repeat or separate with commas)")
-	flags.StringVar(&opts.termsFile, "terms-file", "", "File of extra words to listen for, one per line")
+	flags.StringArrayVarP(&opts.extraTerms, "term", "t", nil, "Additional keyterm to boost recognition, such as a company or person name (repeatable or comma-separated)")
+	flags.StringVar(&opts.termsFile, "terms-file", "", "File of additional keyterms, one per line")
 	flags.StringVarP(&opts.model, "model", "m", defaultModel, "Transcription model to use")
-	flags.StringVarP(&opts.language, "language", "l", defaultLanguage, "Language spoken in the recording")
-	flags.StringVarP(&opts.outputFile, "output", "o", "", "Write the transcript to this file instead of the screen")
-	flags.BoolVarP(&opts.force, "force", "f", false, "Transcribe the recording again even if a saved transcript exists")
-	flags.BoolVar(&opts.noDiarize, "no-diarize", false, "Do not label who is speaking")
-	flags.BoolVar(&opts.noTechTerms, "no-tech-terms", false, "Do not listen for the built-in engineering vocabulary")
-	flags.BoolVar(&opts.noCache, "no-cache", false, "Do not reuse or keep a saved copy of the transcript")
-	flags.BoolVar(&opts.noPreprocess, "no-preprocess", false, "Upload the recording as it is, without making it smaller first")
-	flags.BoolVar(&opts.noMono, "no-mono", false, "Keep both stereo channels instead of merging them into one")
-	flags.BoolVar(&opts.noTrimSilence, "no-trim-silence", false, "Keep long silences instead of cutting them out")
-	flags.StringVar(&opts.silenceThreshold, "silence-threshold", audio.DefaultSilenceThreshold, "How quiet a passage has to be to count as silence")
-	flags.StringVar(&opts.silenceDuration, "silence-duration", audio.DefaultSilenceDuration, "How many seconds a silence has to last before it is cut")
+	flags.StringVarP(&opts.language, "language", "l", defaultLanguage, "Language spoken in the audio")
+	flags.StringVarP(&opts.outputFile, "output", "o", "", "Write the transcript to this file instead of stdout")
+	flags.BoolVarP(&opts.force, "force", "f", false, "Re-transcribe and be billed again, even on a cache hit")
+	flags.BoolVar(&opts.noDiarize, "no-diarize", false, "Disable speaker diarization")
+	flags.BoolVar(&opts.noTechTerms, "no-tech-terms", false, "Disable the built-in engineering keyterms")
+	flags.BoolVar(&opts.noCache, "no-cache", false, "Bypass the response cache, for both reads and writes")
+	flags.BoolVar(&opts.noPreprocess, "no-preprocess", false, "Disable ffmpeg preprocessing before upload")
+	flags.BoolVar(&opts.noMono, "no-mono", false, "Disable stereo-to-mono downmixing")
+	flags.BoolVar(&opts.noTrimSilence, "no-trim-silence", false, "Disable silence trimming")
+	flags.StringVar(&opts.silenceThreshold, "silence-threshold", audio.DefaultSilenceThreshold, "Noise threshold below which audio counts as silence")
+	flags.StringVar(&opts.silenceDuration, "silence-duration", audio.DefaultSilenceDuration, "Minimum silence duration, in seconds, before it is trimmed")
 
 	return cmd
 }
 
 // transcriptRun carries one run of `transcript create` through its steps: read
-// the recording, reuse a saved transcript if there is one, otherwise shrink the
+// the audio, serve a cached response if there is one, otherwise shrink the
 // audio and ask Deepgram, then record what it cost and write the result.
 type transcriptRun struct {
 	cmd    *cobra.Command
@@ -144,7 +144,7 @@ func runTranscriptCreate(cmd *cobra.Command, g *globalOptions, opts *transcriptO
 		return err
 	}
 
-	run.reuseSavedTranscript()
+	run.serveCachedResponse()
 
 	cleanup, err := run.prepareUpload()
 	if err != nil {
@@ -162,7 +162,7 @@ func runTranscriptCreate(cmd *cobra.Command, g *globalOptions, opts *transcriptO
 }
 
 // loadSource reads the recording up front, because its contents alone decide
-// whether a saved transcript can be reused.
+// whether a cached response can be served.
 func (r *transcriptRun) loadSource() error {
 	info, err := os.Stat(r.audioPath)
 	if err != nil {
@@ -182,7 +182,7 @@ func (r *transcriptRun) loadSource() error {
 }
 
 // buildRequest assembles the vocabulary and transcription settings, then derives
-// the two keys the saved-transcript lookup uses.
+// the two keys the cache lookup uses.
 func (r *transcriptRun) buildRequest() error {
 	var termLists [][]string
 
@@ -217,10 +217,10 @@ func (r *transcriptRun) buildRequest() error {
 	return nil
 }
 
-// reuseSavedTranscript looks for a transcript of this recording that was already
-// paid for. It runs before any audio is processed, so a repeat request costs
-// neither money nor time.
-func (r *transcriptRun) reuseSavedTranscript() {
+// serveCachedResponse looks for a cached Deepgram response for this audio. It
+// runs before any audio is processed, so a cache hit costs neither money nor
+// time.
+func (r *transcriptRun) serveCachedResponse() {
 	if r.opts.noCache || r.opts.force {
 		return
 	}
@@ -228,30 +228,30 @@ func (r *transcriptRun) reuseSavedTranscript() {
 	cacheDir := r.global.resolvedCacheDir()
 	name := filepath.Base(r.audioPath)
 
-	// An exact match: same recording, same settings, same vocabulary.
-	if saved, err := deepgram.GetCachedResponse(cacheDir, r.optionsKey); err == nil && saved != nil {
-		r.out.Status("Reusing the saved transcript for %s.", name)
+	// An exact hit: same audio, same options, same keyterms.
+	if cached, err := deepgram.GetCachedResponse(cacheDir, r.optionsKey); err == nil && cached != nil {
+		r.out.Status("Cache hit for %s, serving the cached response.", name)
 		r.out.Detail("cache_key: %s", r.optionsKey)
-		r.response = saved
+		r.response = cached
 		return
 	}
 
-	// The same recording transcribed earlier with different settings. Returning
-	// it avoids a charge the user probably did not intend.
+	// The same audio transcribed earlier under different options. Serving that
+	// response avoids a charge the user probably did not intend.
 	envelope, err := deepgram.FindCachedJobBySourceSHA(cacheDir, r.sourceKey)
 	if err != nil || envelope == nil || envelope.Response == nil {
 		return
 	}
 
-	r.out.Status("Found a saved transcript for %s from an earlier run.", name)
+	r.out.Status("Cache hit for %s on audio content, from a request with different options.", name)
 	if len(envelope.Record.Terms) > 0 || len(r.keyTerms) > 0 {
-		r.out.Warn("The words to listen for differ from the saved transcript.")
+		r.out.Warn("The keyterms differ from the cached request.")
 		r.out.Bullets([]string{
-			fmt.Sprintf("saved: %s", formatTermsSummary(envelope.Record.Terms)),
+			fmt.Sprintf("cached: %s", formatTermsSummary(envelope.Record.Terms)),
 			fmt.Sprintf("requested: %s", formatTermsSummary(r.keyTerms)),
 		})
 	}
-	r.out.Status("Returning the saved transcript so you are not charged again. Use --force to transcribe it again.")
+	r.out.Status("Serving the cached response. Use --force to re-transcribe and be billed again.")
 	r.out.Detail("cache_key: %s", envelope.Record.SHA256)
 
 	r.response = envelope.Response
@@ -260,9 +260,9 @@ func (r *transcriptRun) reuseSavedTranscript() {
 // ffmpegReady reports whether ffmpeg can be used to shrink the recording, and
 // explains on stderr when it cannot.
 //
-// A missing or outdated ffmpeg is not fatal. The recording is uploaded as it is,
-// which costs more but still produces a transcript, so this reports the problem
-// and lets the run continue.
+// A missing or outdated ffmpeg is not fatal. The audio is uploaded unprocessed,
+// which increases the billed duration but still produces a transcript, so this
+// reports the problem and lets the run continue.
 func (r *transcriptRun) ffmpegReady() bool {
 	// Verify returns an error when anything is unsatisfied. Only ffmpeg matters
 	// here, so the report for it is what decides, not the overall result.
@@ -279,14 +279,14 @@ func (r *transcriptRun) ffmpegReady() bool {
 		r.out.Warn("ffmpeg is not usable.")
 	}
 
-	r.out.Status("The recording will be uploaded as it is, which costs more.")
+	r.out.Status("Uploading the audio unprocessed, which increases the billed duration.")
 	r.out.Hint("Run `deepgram-transcribe dependency install` to set ffmpeg up.")
 
 	return false
 }
 
 // prepareUpload makes the recording cheaper to transcribe by merging stereo into
-// one channel and cutting long silences. It is skipped when a saved transcript
+// one channel and cutting long silences. It is skipped when a cached response
 // already answered the request, because nothing will be uploaded.
 //
 // The returned function removes the temporary audio and is safe to call even
@@ -305,7 +305,7 @@ func (r *transcriptRun) prepareUpload() (func(), error) {
 		return noCleanup, nil
 	}
 
-	r.out.Status("Preparing %s for upload.", filepath.Base(r.audioPath))
+	r.out.Status("Preprocessing %s before upload.", filepath.Base(r.audioPath))
 	r.out.Detail("mono: %t trim_silence: %t", r.opts.wantsMono(), r.opts.wantsTrimSilence())
 
 	processed, cleanup, err := audio.PreprocessAudio(r.cmd.Context(), r.audioPath, audio.PreprocessOptions{
@@ -363,7 +363,7 @@ func (r *transcriptRun) fetchTranscript() error {
 
 	if !r.opts.noCache {
 		if err := deepgram.SaveCachedResponse(r.global.resolvedCacheDir(), r.optionsKey, response); err != nil {
-			r.out.Warn("The transcript could not be saved for reuse: %v", err)
+			r.out.Warn("Could not write the response to cache: %v", err)
 		}
 	}
 
@@ -428,7 +428,7 @@ func (r *transcriptRun) recordJob() {
 	}
 
 	if err := deepgram.SaveJobRecord(r.global.resolvedCacheDir(), record); err != nil {
-		r.out.Warn("This job could not be added to your history: %v", err)
+		r.out.Warn("Could not write the job record to history: %v", err)
 	}
 }
 

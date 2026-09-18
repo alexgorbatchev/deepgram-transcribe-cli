@@ -55,7 +55,8 @@ func Format(resp *deepgram.PreRecordedResponse, meta MetaInfo) string {
 	}
 
 	sb.WriteString("\n---\n\n")
-	sb.WriteString("## Conversation Transcript\n\n")
+	// "Transcript", not "Conversation": the audio may be a single speaker.
+	sb.WriteString("## Transcript\n\n")
 
 	if resp == nil {
 		sb.WriteString("*(No transcript data available)*\n")

@@ -83,12 +83,12 @@ func (g *globalOptions) newClient() *deepgram.Client {
 func newRootCmd(g *globalOptions) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "deepgram-transcribe",
-		Short: "Turn call recordings into readable transcripts",
-		Long: `deepgram-transcribe turns a recorded call into a readable Markdown transcript,
-labelled with who is speaking and when they spoke.
+		Short: "Transcribe speech in an audio file to Markdown",
+		Long: `deepgram-transcribe turns any audio containing speech into a readable Markdown
+transcript, labelled with who is speaking and when they spoke.
 
-It keeps a copy of every transcript it makes, so asking for the same recording
-twice is free, and it can tell you what each recording cost to transcribe.`,
+Responses are cached locally and served from cache on repeated requests, so the
+same audio is never billed twice, and it reports what each request cost.`,
 		Version:       version,
 		SilenceErrors: true,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
@@ -109,7 +109,7 @@ twice is free, and it can tell you what each recording cost to transcribe.`,
 	root.SetVersionTemplate("{{.Version}}\n")
 
 	flags := root.PersistentFlags()
-	flags.StringVar(&g.cacheDir, "cache-dir", "", "Folder that saved transcripts are kept in")
+	flags.StringVar(&g.cacheDir, "cache-dir", "", "Directory for the local response cache")
 	flags.StringVar(&g.apiKey, "api-key", "", "Deepgram API key (defaults to the DEEPGRAM_API_KEY environment variable)")
 
 	root.AddCommand(

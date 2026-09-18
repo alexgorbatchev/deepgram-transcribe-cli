@@ -99,7 +99,7 @@ func TestTranscriptCreateWritesTranscriptAndRecordsJob(t *testing.T) {
 	}
 }
 
-func TestTranscriptCreateReusesSavedTranscriptBeforeTouchingAudio(t *testing.T) {
+func TestTranscriptCreateServesCachedResponseBeforeTouchingAudio(t *testing.T) {
 	cacheDir := t.TempDir()
 	audioContent := "fake raw audio bytes for cache first test"
 	audioPath := writeAudio(t, t.TempDir(), "interview.m4a", audioContent)
@@ -122,25 +122,25 @@ func TestTranscriptCreateReusesSavedTranscriptBeforeTouchingAudio(t *testing.T) 
 		}},
 	}
 	if err := deepgram.SaveCachedResponse(cacheDir, optionsKey, saved); err != nil {
-		t.Fatalf("seeding the saved transcript: %v", err)
+		t.Fatalf("seeding the cached response: %v", err)
 	}
 
 	root, out, errOut := newTestCLI(t, cacheDir, "")
 	root.SetArgs([]string{"transcript", "create", audioPath, "--no-preprocess"})
 
 	if err := root.Execute(); err != nil {
-		t.Fatalf("expected the saved transcript to be reused, got: %v", err)
+		t.Fatalf("expected the cached response to be served, got: %v", err)
 	}
 
-	if !strings.Contains(errOut.String(), "Reusing the saved transcript") {
-		t.Errorf("expected a reuse notice on stderr, got: %s", errOut.String())
+	if !strings.Contains(errOut.String(), "Cache hit for") {
+		t.Errorf("expected a cache hit notice on stderr, got: %s", errOut.String())
 	}
 	if !strings.Contains(out.String(), "Cached transcript without preprocessing") {
-		t.Errorf("expected the saved transcript on stdout, got: %s", out.String())
+		t.Errorf("expected the cached response on stdout, got: %s", out.String())
 	}
 }
 
-func TestTranscriptCreateWarnsWhenSavedTermsDiffer(t *testing.T) {
+func TestTranscriptCreateWarnsWhenCachedKeytermsDiffer(t *testing.T) {
 	cacheDir := t.TempDir()
 	audioContent := "fake raw audio bytes for term diff test"
 	audioPath := writeAudio(t, t.TempDir(), "interview.m4a", audioContent)
@@ -173,14 +173,14 @@ func TestTranscriptCreateWarnsWhenSavedTermsDiffer(t *testing.T) {
 	}
 
 	stderr := errOut.String()
-	if !strings.Contains(stderr, "words to listen for differ") {
-		t.Errorf("expected a vocabulary warning on stderr, got: %s", stderr)
+	if !strings.Contains(stderr, "keyterms differ from the cached request") {
+		t.Errorf("expected a keyterm mismatch warning on stderr, got: %s", stderr)
 	}
 	if !strings.Contains(stderr, "Go, Kubernetes") {
-		t.Errorf("expected the saved vocabulary to be listed, got: %s", stderr)
+		t.Errorf("expected the cached keyterms to be listed, got: %s", stderr)
 	}
 	if !strings.Contains(out.String(), "Transcript from original source audio") {
-		t.Errorf("expected the saved transcript on stdout, got: %s", out.String())
+		t.Errorf("expected the cached response on stdout, got: %s", out.String())
 	}
 }
 
@@ -249,7 +249,7 @@ func TestTranscriptCreateContinuesWithoutFFmpeg(t *testing.T) {
 	if !strings.Contains(stderr, "ffmpeg") {
 		t.Errorf("expected ffmpeg to be named in the warning, got: %s", stderr)
 	}
-	if !strings.Contains(stderr, "uploaded as it is") {
+	if !strings.Contains(stderr, "Uploading the audio unprocessed") {
 		t.Errorf("expected the consequence to be explained, got: %s", stderr)
 	}
 	if !strings.Contains(stderr, "dependency install") {

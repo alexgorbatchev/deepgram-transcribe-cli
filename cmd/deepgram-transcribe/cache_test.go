@@ -9,7 +9,7 @@ import (
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/deepgram"
 )
 
-func TestCacheStatusReportsFolderAndCount(t *testing.T) {
+func TestCacheStatusReportsLocationAndCount(t *testing.T) {
 	cacheDir := t.TempDir()
 	seedJob(t, cacheDir, deepgram.JobRecord{RequestID: "req-status", Filename: "call.m4a"})
 
@@ -24,12 +24,12 @@ func TestCacheStatusReportsFolderAndCount(t *testing.T) {
 	if !strings.Contains(status, cacheDir) {
 		t.Errorf("expected the cache folder to be named, got:\n%s", status)
 	}
-	if !strings.Contains(status, "Saved transcripts:") || !strings.Contains(status, "1") {
-		t.Errorf("expected a count of saved transcripts, got:\n%s", status)
+	if !strings.Contains(status, "Cached responses:") || !strings.Contains(status, "1") {
+		t.Errorf("expected a count of cached responses, got:\n%s", status)
 	}
 }
 
-func TestCacheClearRemovesSavedTranscriptsOnly(t *testing.T) {
+func TestCacheClearRemovesCachedResponsesOnly(t *testing.T) {
 	cacheDir := t.TempDir()
 	seedJob(t, cacheDir, deepgram.JobRecord{RequestID: "req-clear", Filename: "call.m4a"})
 
@@ -45,7 +45,7 @@ func TestCacheClearRemovesSavedTranscriptsOnly(t *testing.T) {
 		t.Fatalf("cache clear failed: %v", err)
 	}
 
-	if !strings.Contains(errOut.String(), "Deleted 1 saved transcript") {
+	if !strings.Contains(errOut.String(), "Deleted 1 cached response") {
 		t.Errorf("expected a confirmation naming what was deleted, got: %s", errOut.String())
 	}
 
@@ -54,7 +54,7 @@ func TestCacheClearRemovesSavedTranscriptsOnly(t *testing.T) {
 		t.Fatalf("listing records after clear: %v", err)
 	}
 	if len(records) != 0 {
-		t.Errorf("expected no saved transcripts after clear, got %d", len(records))
+		t.Errorf("expected no cached responses after clear, got %d", len(records))
 	}
 
 	if _, err := os.Stat(unrelated); err != nil {

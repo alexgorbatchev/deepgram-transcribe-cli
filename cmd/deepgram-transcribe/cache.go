@@ -11,7 +11,7 @@ import (
 func newCacheCmd(g *globalOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cache",
-		Short: "Manage the transcripts saved on this computer",
+		Short: "Manage the local response cache",
 	}
 
 	cmd.AddCommand(
@@ -26,7 +26,7 @@ func newCacheCmd(g *globalOptions) *cobra.Command {
 func newCacheStatusCmd(g *globalOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
-		Short: "Show where transcripts are saved and how many are kept",
+		Short: "Show the cache location and how many responses are stored",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cliout.New(cmd.OutOrStdout(), cmd.ErrOrStderr())
 
@@ -36,8 +36,8 @@ func newCacheStatusCmd(g *globalOptions) *cobra.Command {
 			}
 
 			out.Fields().
-				Add("Folder", "%s", g.resolvedCacheDir()).
-				Add("Saved transcripts", "%d", len(records)).
+				Add("Directory", "%s", g.resolvedCacheDir()).
+				Add("Cached responses", "%d", len(records)).
 				Render()
 
 			return nil
@@ -49,7 +49,7 @@ func newCacheStatusCmd(g *globalOptions) *cobra.Command {
 func newCacheClearCmd(g *globalOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:   "clear",
-		Short: "Delete every saved transcript and its history entry",
+		Short: "Delete all cached responses and job history",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cliout.New(cmd.OutOrStdout(), cmd.ErrOrStderr())
 
@@ -58,7 +58,7 @@ func newCacheClearCmd(g *globalOptions) *cobra.Command {
 				return err
 			}
 
-			out.Success("Deleted %d saved transcript(s) from %s.", removed, g.resolvedCacheDir())
+			out.Success("Deleted %d cached response(s) from %s.", removed, g.resolvedCacheDir())
 
 			return nil
 		},

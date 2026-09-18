@@ -11,7 +11,7 @@ import (
 func newDependencyCmd(g *globalOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "dependency",
-		Short: "Manage the other programs this tool needs",
+		Short: "Manage required external programs",
 	}
 
 	cmd.AddCommand(
@@ -27,7 +27,7 @@ func newDependencyCmd(g *globalOptions) *cobra.Command {
 func newDependencyListCmd(g *globalOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List the programs this tool needs and whether they are ready",
+		Short: "List required programs and their status",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cliout.New(cmd.OutOrStdout(), cmd.ErrOrStderr())
 
@@ -59,7 +59,7 @@ func newDependencyListCmd(g *globalOptions) *cobra.Command {
 func newDependencyInstallCmd(g *globalOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:   "install",
-		Short: "Install anything that is missing or too old",
+		Short: "Install missing or outdated programs",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cliout.New(cmd.OutOrStdout(), cmd.ErrOrStderr())
 
@@ -69,7 +69,7 @@ func newDependencyInstallCmd(g *globalOptions) *cobra.Command {
 			}
 
 			if len(installed) == 0 {
-				out.Success("Everything this tool needs is already installed.")
+				out.Success("All required programs are already installed.")
 				return nil
 			}
 
@@ -86,7 +86,7 @@ func newDependencyInstallCmd(g *globalOptions) *cobra.Command {
 func newDependencyUpdateCmd(g *globalOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:   "update",
-		Short: "Update the programs this tool needs to their newest versions",
+		Short: "Update required programs to their latest versions",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cliout.New(cmd.OutOrStdout(), cmd.ErrOrStderr())
 

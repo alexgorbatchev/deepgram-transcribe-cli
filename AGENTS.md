@@ -1,6 +1,6 @@
 # deepgram-transcribe-cli Agent Guidelines
 
-Workspace for `deepgram-transcribe-cli` — a Go CLI utility (`deepgram-transcribe`) that turns recorded calls into Markdown transcripts with speaker labelling, custom vocabulary boosting, local transcript reuse and spending history.
+Workspace for `deepgram-transcribe-cli` — a Go CLI utility (`deepgram-transcribe`) that transcribes any audio containing speech into Markdown, with speaker diarization, custom keyterm boosting, a local Deepgram response cache and spending history.
 
 ## Repository & GitHub Releases
 - Public GitHub Repository: [`github.com/alexgorbatchev/deepgram-transcribe-cli`](https://github.com/alexgorbatchev/deepgram-transcribe-cli)
@@ -34,7 +34,7 @@ Workspace for `deepgram-transcribe-cli` — a Go CLI utility (`deepgram-transcri
 - `internal/deps/`: the external programs this CLI needs, declared for `godeps`. Currently only `ffmpeg`, with its minimum version, install strategy and managed PATH setup.
 - `pkg/deepgram/`: Deepgram API client (`Client`), URL builder, options, local SHA-256 response store (`cache.go`), job history (`job.go`) and response models (`types.go`).
 - `pkg/audio/`: `ffmpeg` preprocessing (`PreprocessAudio`) for stereo-to-mono downmixing and silence trimming, plus MIME detection.
-- `pkg/terms/`: engineering vocabulary (`DefaultTechTerms`), custom term parsing and file loading.
+- `pkg/terms/`: built-in engineering keyterms (`DefaultTechTerms`), custom keyterm parsing and file loading.
 - `pkg/markdown/`: transcript formatter (`Format`) with speaker turn grouping and a metadata table.
 
 ## CLI Structure (Assuming `deepgram-transcribe` is on PATH)
@@ -42,8 +42,8 @@ Commands follow a subject-verb hierarchy, at most three levels deep:
 - `deepgram-transcribe transcript create <audio-file>`: transcribe a recording to stdout or `--output`.
 - `deepgram-transcribe job list [--limit N]`: list past transcriptions and total spending.
 - `deepgram-transcribe job inspect <audio-file|request-id>`: show details and cost for one transcription.
-- `deepgram-transcribe cache status`: show where transcripts are saved and how many are kept.
-- `deepgram-transcribe cache clear`: delete saved transcripts and history.
+- `deepgram-transcribe cache status`: show the cache location and how many responses are stored.
+- `deepgram-transcribe cache clear`: delete all cached responses and job history.
 - `deepgram-transcribe dependency list|install|update`: inspect and manage the external programs, currently just `ffmpeg`.
 
 ## Mandatory Maintenance Boundaries

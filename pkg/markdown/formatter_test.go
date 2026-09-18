@@ -8,6 +8,24 @@ import (
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/deepgram"
 )
 
+// TestTranscriptHeadingDoesNotAssumeAConversation pins the section heading. The
+// input is any audio containing speech, which may be a single speaker, so the
+// heading must not call it a conversation.
+func TestTranscriptHeadingDoesNotAssumeAConversation(t *testing.T) {
+	out := Format(&deepgram.PreRecordedResponse{
+		Results: deepgram.Results{Utterances: []deepgram.Utterance{
+			{Speaker: 0, Transcript: "A single person talking to a microphone."},
+		}},
+	}, MetaInfo{Filename: "memo.m4a"})
+
+	if !strings.Contains(out, "## Transcript\n") {
+		t.Errorf("expected a `## Transcript` heading, got:\n%s", out)
+	}
+	if strings.Contains(out, "Conversation") {
+		t.Errorf("expected no mention of a conversation, got:\n%s", out)
+	}
+}
+
 func TestFormatMarkdownWithUtterances(t *testing.T) {
 	resp := &deepgram.PreRecordedResponse{
 		Metadata: deepgram.Metadata{
