@@ -34,7 +34,7 @@
 # Prerequisites
 
 - [Deepgram API key](https://console.deepgram.com/) - Required to transcribe. Set `DEEPGRAM_API_KEY` in your environment or pass `--api-key`. Reading your history and saved transcripts does not need one.
-- [ffmpeg](https://ffmpeg.org/download.html) - Optional but recommended. Without it, recordings are uploaded at full size and cost roughly twice as much.
+- [ffmpeg](https://ffmpeg.org/download.html) - Version 4.4 or newer, optional but recommended. Without it, recordings are uploaded at full size and cost roughly twice as much. Run `deepgram-transcribe dependency install` and the tool will install it for you through your system package manager.
 
 # Installation
 
@@ -106,6 +106,10 @@ deepgram-transcribe
 ├─ cache                               Manage the transcripts saved on this computer
 │  ├─ clear                            Delete every saved transcript and its history entry
 │  ╰─ status                           Show where transcripts are saved and how many are kept
+├─ dependency                          Manage the other programs this tool needs
+│  ├─ install                          Install anything that is missing or too old
+│  ├─ list                             List the programs this tool needs and whether they are ready
+│  ╰─ update                           Update the programs this tool needs to their newest versions
 ├─ job                                 Review past transcriptions and what they cost
 │  ├─ inspect <audio-file|request-id>  Show the details and cost of one past transcription
 │  ╰─ list                             List past transcriptions and total spending
@@ -114,6 +118,23 @@ deepgram-transcribe
 ```
 
 Supported audio formats are `.mp3`, `.m4a`, `.mp4`, `.wav`, `.flac`, `.ogg` and `.aac`.
+
+# Required Programs
+
+Transcribing needs nothing but the binary itself. Making recordings smaller before upload needs `ffmpeg`, and the tool manages that for you rather than leaving you to work out what is missing.
+
+```bash
+# What is needed, what is installed, and whether it is good enough
+deepgram-transcribe dependency list
+
+# Install anything missing or too old, through brew, apt, pacman, dnf or winget
+deepgram-transcribe dependency install
+
+# Move everything to its newest version
+deepgram-transcribe dependency update
+```
+
+Anything the tool installs itself goes into its own directory, under `$XDG_DATA_HOME/deepgram-transcribe/bin` or `~/.local/share/deepgram-transcribe/bin`, which is added to the path for its own runs only. Nothing outside that directory is touched. If `ffmpeg` is missing when you transcribe, the recording is uploaded at full size and the run says so rather than failing.
 
 # Agent Mode
 
@@ -147,13 +168,14 @@ The official [`deepgram/cli`](https://github.com/deepgram/cli) streams audio to 
 # Development
 
 ```bash
-just build      # Build the binary into bin/
-just run        # Run it in human mode
-just run-ai     # Run it in agent mode
-just test       # Run the test suite
-just lint       # Check formatting and run static analysis
-just check      # Lint, test and verify module hygiene
-just coverage   # Report test coverage
+just build        # Build the binary into bin/
+just run          # Run it in human mode
+just run-ai       # Run it in agent mode
+just test         # Run the test suite
+just lint         # Check formatting and run static analysis
+just check        # Lint, test and verify module hygiene
+just coverage     # Report test coverage
+just update-deps  # Update Go module dependencies
 ```
 
 # License

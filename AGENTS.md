@@ -28,8 +28,10 @@ Workspace for `deepgram-transcribe-cli` — a Go CLI utility (`deepgram-transcri
   - `transcript.go`: the `transcript create` verb and the steps of one transcription run.
   - `job.go`: the `job list` and `job inspect` verbs, plus concurrent billed-cost lookups.
   - `cache.go`: the `cache status` and `cache clear` verbs.
+  - `dependency.go`: the `dependency list`, `dependency install` and `dependency update` verbs.
   - `format.go`: shared human-readable formatting.
 - `internal/cliout/`: the dual-mode output layer (`AGENT=1`), covering statuses, fields, tables, rules and hinted errors.
+- `internal/deps/`: the external programs this CLI needs, declared for `godeps`. Currently only `ffmpeg`, with its minimum version, install strategy and managed PATH setup.
 - `pkg/deepgram/`: Deepgram API client (`Client`), URL builder, options, local SHA-256 response store (`cache.go`), job history (`job.go`) and response models (`types.go`).
 - `pkg/audio/`: `ffmpeg` preprocessing (`PreprocessAudio`) for stereo-to-mono downmixing and silence trimming, plus MIME detection.
 - `pkg/terms/`: engineering vocabulary (`DefaultTechTerms`), custom term parsing and file loading.
@@ -42,9 +44,11 @@ Commands follow a subject-verb hierarchy, at most three levels deep:
 - `deepgram-transcribe job inspect <audio-file|request-id>`: show details and cost for one transcription.
 - `deepgram-transcribe cache status`: show where transcripts are saved and how many are kept.
 - `deepgram-transcribe cache clear`: delete saved transcripts and history.
+- `deepgram-transcribe dependency list|install|update`: inspect and manage the external programs, currently just `ffmpeg`.
 
 ## Mandatory Maintenance Boundaries
 1. **NO LIVE API CALLS IN TESTS**: Unit tests MUST mock the Deepgram API via `httptest.NewServer`. Tests must never consume live Deepgram credits or make external network calls.
+   Likewise, tests MUST inject a stub `godeps.CommandRunner` rather than run real external programs, and MUST NOT exercise `dependency install` or `dependency update` down to a branch that actually installs, because `godeps.SystemPackageManager` shells out to `brew`, `apt-get` and friends with a runner that cannot be replaced from outside that library.
 2. **HIGH FUNCTION COVERAGE**: Maintain statement and function coverage across all domain packages (`internal/cliout`, `pkg/deepgram`, `pkg/audio`, `pkg/terms`, `pkg/markdown`).
 3. **NO BINARIES IN GIT**: Compiled binaries (`bin/`) MUST be excluded via `.gitignore` and never committed to the repository.
 4. **DUAL-MODE OUTPUT**: Every new output path MUST go through `internal/cliout` so that `AGENT=1` stays token-conservative. Never print tables, rules or padding directly.
