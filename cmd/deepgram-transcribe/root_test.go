@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -149,6 +150,136 @@ func TestCacheDirFlagIsAvailableToEverySubcommand(t *testing.T) {
 				t.Fatalf("%v with --cache-dir failed: %v", args, err)
 			}
 		})
+	}
+}
+
+// captureProcessStreams runs fn with the process's own stdout and stderr
+// replaced by pipes, and returns what each received.
+//
+// The buffers that the other tests install would hide the defect this guards
+// against: cobra falls back to stderr only when no output writer is set, which
+// is exactly the case for the real binary and never the case once SetOut has
+// been called.
+func captureProcessStreams(t *testing.T, fn func()) (string, string) {
+	t.Helper()
+
+	outReader, outWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("creating the stdout pipe: %v", err)
+	}
+	errReader, errWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("creating the stderr pipe: %v", err)
+	}
+
+	originalOut, originalErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = outWriter, errWriter
+	defer func() { os.Stdout, os.Stderr = originalOut, originalErr }()
+
+	fn()
+
+	// Close before reading, so the reads see EOF rather than blocking. The help
+	// screen is far smaller than the pipe buffer, so writing cannot block first.
+	if err := outWriter.Close(); err != nil {
+		t.Fatalf("closing the stdout pipe: %v", err)
+	}
+	if err := errWriter.Close(); err != nil {
+		t.Fatalf("closing the stderr pipe: %v", err)
+	}
+
+	capturedOut, err := io.ReadAll(outReader)
+	if err != nil {
+		t.Fatalf("reading captured stdout: %v", err)
+	}
+	capturedErr, err := io.ReadAll(errReader)
+	if err != nil {
+		t.Fatalf("reading captured stderr: %v", err)
+	}
+
+	return string(capturedOut), string(capturedErr)
+}
+
+// TestHelpGoesToStdout proves that help someone asked for can be piped or
+// redirected. cobra's Print falls back to stderr, so rendering help through it
+// leaves `--help | less` and `--help > file` empty.
+func TestHelpGoesToStdout(t *testing.T) {
+	for _, args := range [][]string{
+		{"--help"},
+		{"cache", "--help"},
+		{"transcript", "create", "--help"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			t.Setenv(apiKeyEnvVar, "")
+			t.Setenv("AGENT", "")
+			t.Setenv("XDG_DATA_HOME", t.TempDir())
+			t.Setenv("PATH", os.Getenv("PATH"))
+
+			// No SetOut or SetErr here: the fallback under test only happens
+			// when the command has no writer of its own.
+			root := newRootCmd(&globalOptions{defaultCacheDir: t.TempDir()})
+			root.SetArgs(args)
+
+			var execErr error
+			stdout, stderr := captureProcessStreams(t, func() { execErr = root.Execute() })
+
+			if execErr != nil {
+				t.Fatalf("%v failed: %v", args, execErr)
+			}
+			if !strings.Contains(stdout, "Usage:") {
+				t.Errorf("expected the help screen on stdout, got %q", stdout)
+			}
+			if stderr != "" {
+				t.Errorf("expected nothing on stderr, got %q", stderr)
+			}
+		})
+	}
+}
+
+func TestAgentHelpAlsoGoesToStdout(t *testing.T) {
+	t.Setenv(apiKeyEnvVar, "")
+	t.Setenv("AGENT", "1")
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("PATH", os.Getenv("PATH"))
+
+	root := newRootCmd(&globalOptions{defaultCacheDir: t.TempDir()})
+	root.SetArgs([]string{"--help"})
+
+	var execErr error
+	stdout, stderr := captureProcessStreams(t, func() { execErr = root.Execute() })
+
+	if execErr != nil {
+		t.Fatalf("--help failed: %v", execErr)
+	}
+	if !strings.Contains(stdout, "command: deepgram-transcribe") {
+		t.Errorf("expected the compact agent help on stdout, got %q", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("expected nothing on stderr, got %q", stderr)
+	}
+}
+
+// TestUsageAfterBadArgumentsGoesToStderr is the other half of the contract:
+// output nobody asked for must not pollute a redirect of the result.
+func TestUsageAfterBadArgumentsGoesToStderr(t *testing.T) {
+	t.Setenv(apiKeyEnvVar, "")
+	t.Setenv("AGENT", "")
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("PATH", os.Getenv("PATH"))
+
+	root := newRootCmd(&globalOptions{defaultCacheDir: t.TempDir()})
+	root.SetArgs([]string{"transcript", "create"})
+
+	var execErr error
+	stdout, stderr := captureProcessStreams(t, func() { execErr = root.Execute() })
+
+	if execErr == nil {
+		t.Fatal("expected an error when the audio file is missing")
+	}
+	if !strings.Contains(stderr, "Usage:") {
+		t.Errorf("expected the usage screen on stderr, got %q", stderr)
+	}
+	if stdout != "" {
+		t.Errorf("expected nothing on stdout, got %q", stdout)
 	}
 }
 

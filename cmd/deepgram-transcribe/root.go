@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 
 	cobrahelptree "github.com/alexgorbatchev/cobra-help-tree"
@@ -119,9 +120,29 @@ same audio is never billed twice, and it reports what each request cost.`,
 		newTranscriptCmd(g),
 	)
 
-	// Render every help screen as an aligned command tree, trimmed to the
-	// terminal width, and as compact key-value text when AGENT=1.
-	cobrahelptree.Setup(root)
+	setTreeHelp(root)
 
 	return root
+}
+
+// setTreeHelp renders every help screen as an aligned command tree, trimmed to
+// the terminal width, and as compact key-value text when AGENT=1.
+//
+// The renderers come from cobra-help-tree, but the writer does not. That
+// library's Setup prints through cobra's Print, which falls back to stderr when
+// no output writer is set, so an explicitly requested help screen would never
+// reach a pipe or a redirect. Help someone asked for is the result of the
+// command and belongs on stdout. Usage printed after a failure still goes to
+// stderr, which is cobra's own behaviour and is left alone.
+func setTreeHelp(root *cobra.Command) {
+	root.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		screen := cobrahelptree.RenderTreeHelp(cmd)
+		if cobrahelptree.IsAgentMode() {
+			screen = cobrahelptree.RenderAgentHelp(cmd)
+		}
+
+		// A write to the terminal that fails leaves nowhere to report the
+		// failure, so the error is dropped deliberately.
+		_, _ = fmt.Fprint(cmd.OutOrStdout(), screen)
+	})
 }

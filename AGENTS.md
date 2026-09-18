@@ -54,4 +54,4 @@ Commands follow a subject-verb hierarchy, at most three levels deep:
 4. **DUAL-MODE OUTPUT**: Every new output path MUST go through `internal/cliout` so that `AGENT=1` stays token-conservative. Never print tables, rules or padding directly.
 5. **SUBJECT-VERB COMMANDS**: New commands MUST nest a verb under a subject, and help screens MUST stay on `cobra-help-tree`.
 6. **CLEAN VERSION OUTPUT**: `--version` MUST print only the bare version string, because scripts parse it.
-7. **STDOUT IS THE RESULT**: Progress, warnings and errors belong on stderr, so that redirecting stdout captures the transcript alone.
+7. **STDOUT IS THE RESULT**: Progress, warnings and errors belong on stderr, so that redirecting stdout captures the transcript alone. Help that the user explicitly asked for is a result and MUST go to stdout, which is why `setTreeHelp` renders through `OutOrStdout` rather than calling `cobrahelptree.Setup`, whose `cmd.Print` falls back to stderr. Usage printed after a failure stays on stderr.
