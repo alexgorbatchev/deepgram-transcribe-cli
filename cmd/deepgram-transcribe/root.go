@@ -1,10 +1,9 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
-	cobrahelptree "github.com/alexgorbatchev/cobra-help-tree"
+	cobrahelptree "github.com/alexgorbatchev/cobra-help-tree/v2"
 	"github.com/alexgorbatchev/godeps"
 	"github.com/spf13/cobra"
 
@@ -15,8 +14,15 @@ import (
 // version is replaced at build time by GoReleaser (-X main.version={{.Version}}).
 var version = "dev"
 
-// apiKeyEnvVar is the environment variable consulted when --api-key is not given.
-const apiKeyEnvVar = "DEEPGRAM_API_KEY"
+const (
+	// apiKeyEnvVar is the environment variable consulted when --api-key is not given.
+	apiKeyEnvVar = "DEEPGRAM_API_KEY"
+
+	// rootCommandName is the binary's name. The help catalog is keyed on full
+	// command paths, which start with it, so both come from here and cannot drift
+	// apart.
+	rootCommandName = "deepgram-transcribe"
+)
 
 // globalOptions holds the settings that every subcommand shares. They are bound
 // to persistent flags on the root command so that a transcript saved to a custom
@@ -83,7 +89,7 @@ func (g *globalOptions) newClient() *deepgram.Client {
 // cache clear.
 func newRootCmd(g *globalOptions) *cobra.Command {
 	root := &cobra.Command{
-		Use:   "deepgram-transcribe",
+		Use:   rootCommandName,
 		Short: "Transcribe speech in an audio file to Markdown",
 		Long: `deepgram-transcribe turns any audio containing speech into a readable Markdown
 transcript, labelled with who is speaking and when they spoke.
@@ -125,24 +131,47 @@ same audio is never billed twice, and it reports what each request cost.`,
 	return root
 }
 
-// setTreeHelp renders every help screen as an aligned command tree, trimmed to
-// the terminal width, and as compact key-value text when AGENT=1.
+// setTreeHelp renders every help and usage screen as an aligned command tree,
+// trimmed to the terminal width, and as compact key-value text when AGENT=1.
 //
-// The renderers come from cobra-help-tree, but the writer does not. That
-// library's Setup prints through cobra's Print, which falls back to stderr when
-// no output writer is set, so an explicitly requested help screen would never
-// reach a pipe or a redirect. Help someone asked for is the result of the
-// command and belongs on stdout. Usage printed after a failure still goes to
-// stderr, which is cobra's own behaviour and is left alone.
+// Generated commands are hidden because the tree exists to be read: cobra's
+// completion command arrives with four shell children, so keeping it would cost
+// five lines above the first command this CLI actually defines. Agent mode still
+// lists it, since there the contract is a full description of the interface.
+//
+// The error is dropped deliberately. SetupWithOptions fails only on a nil
+// command or invalid options, and both are fixed here: root was just built, and
+// the options are a literal holding one bool.
 func setTreeHelp(root *cobra.Command) {
-	root.SetHelpFunc(func(cmd *cobra.Command, args []string) {
-		screen := cobrahelptree.RenderTreeHelp(cmd)
-		if cobrahelptree.IsAgentMode() {
-			screen = cobrahelptree.RenderAgentHelp(cmd)
-		}
-
-		// A write to the terminal that fails leaves nowhere to report the
-		// failure, so the error is dropped deliberately.
-		_, _ = fmt.Fprint(cmd.OutOrStdout(), screen)
+	_ = cobrahelptree.SetupWithOptions(root, cobrahelptree.HelpOptions{
+		Catalog: helpCatalog(),
+		Tree:    cobrahelptree.TreeOptions{HideGeneratedCommands: true},
 	})
+}
+
+// helpCatalog describes what each positional argument means.
+//
+// Cobra has nowhere to put this: Use carries argument names as free text and
+// ValidArgs is an enum of accepted values, so without a catalog a reader sees
+// <audio-file|request-id> and has to guess what either half accepts. Both help
+// modes render these, under "Arguments:" and "args:" respectively.
+//
+// Only commands that take positional arguments appear here. Everything else the
+// renderers need, the summary and the description, they already read from the
+// command's own Short and Long.
+func helpCatalog() cobrahelptree.TechCatalog {
+	return cobrahelptree.TechCatalog{
+		rootCommandName + " transcript create": {
+			Args: []cobrahelptree.ArgSpec{{
+				Name:        "<audio-file>",
+				Description: "Audio to transcribe: mp3, m4a, mp4, wav, flac, ogg or aac",
+			}},
+		},
+		rootCommandName + " job inspect": {
+			Args: []cobrahelptree.ArgSpec{{
+				Name:        "<audio-file|request-id>",
+				Description: "An audio file, matched by its contents, or a request ID from `job list`",
+			}},
+		},
+	}
 }

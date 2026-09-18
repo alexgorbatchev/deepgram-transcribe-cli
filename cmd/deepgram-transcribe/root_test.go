@@ -283,6 +283,109 @@ func TestUsageAfterBadArgumentsGoesToStderr(t *testing.T) {
 	}
 }
 
+// TestHumanHelpHidesGeneratedCommandsButAgentHelpKeepsThem pins the one option
+// this CLI passes to the help renderer. Cobra's generated completion command
+// brings four shell children, which would push the first real command five lines
+// down a tree whose whole purpose is readability. Agent mode still lists it,
+// because there the contract is a full description of what the binary accepts.
+func TestHumanHelpHidesGeneratedCommandsButAgentHelpKeepsThem(t *testing.T) {
+	human, humanOut, _ := newTestCLI(t, t.TempDir(), "")
+	human.SetArgs([]string{"--help"})
+	if err := human.Execute(); err != nil {
+		t.Fatalf("--help failed: %v", err)
+	}
+
+	if !strings.Contains(humanOut.String(), "├─ cache") {
+		t.Errorf("expected the command tree, got:\n%s", humanOut.String())
+	}
+	if strings.Contains(humanOut.String(), "completion") {
+		t.Errorf("expected no generated command in the tree, got:\n%s", humanOut.String())
+	}
+
+	agent, agentOut, _ := newTestCLI(t, t.TempDir(), "")
+	t.Setenv("AGENT", "1")
+	agent.SetArgs([]string{"--help"})
+	if err := agent.Execute(); err != nil {
+		t.Fatalf("--help failed: %v", err)
+	}
+
+	if !strings.Contains(agentOut.String(), "completion") {
+		t.Errorf("expected agent help to list every accepted command, got:\n%s", agentOut.String())
+	}
+}
+
+// TestPositionalArgumentsAreDocumented covers the help catalog. Cobra has no
+// field for describing a positional argument, so without the catalog a reader
+// sees the bare placeholder from Use and has to guess what it accepts.
+func TestPositionalArgumentsAreDocumented(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		arg     string
+		mention string
+	}{
+		{
+			name:    "transcript create",
+			args:    []string{"transcript", "create", "--help"},
+			arg:     "<audio-file>",
+			mention: "m4a",
+		},
+		{
+			name:    "job inspect",
+			args:    []string{"job", "inspect", "--help"},
+			arg:     "<audio-file|request-id>",
+			mention: "request ID",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			human, humanOut, _ := newTestCLI(t, t.TempDir(), "")
+			human.SetArgs(tt.args)
+			if err := human.Execute(); err != nil {
+				t.Fatalf("%v failed: %v", tt.args, err)
+			}
+
+			screen := humanOut.String()
+			if !strings.Contains(screen, "Arguments:") {
+				t.Errorf("expected an arguments block, got:\n%s", screen)
+			}
+			if !strings.Contains(screen, tt.arg) || !strings.Contains(screen, tt.mention) {
+				t.Errorf("expected %q described with %q, got:\n%s", tt.arg, tt.mention, screen)
+			}
+
+			agent, agentOut, _ := newTestCLI(t, t.TempDir(), "")
+			t.Setenv("AGENT", "1")
+			agent.SetArgs(tt.args)
+			if err := agent.Execute(); err != nil {
+				t.Fatalf("%v in agent mode failed: %v", tt.args, err)
+			}
+
+			if !strings.Contains(agentOut.String(), "args:") {
+				t.Errorf("expected agent mode to describe the arguments, got:\n%s", agentOut.String())
+			}
+		})
+	}
+}
+
+// TestHelpCatalogKeysMatchRealCommands guards the catalog against drift. Its keys
+// are command paths as strings, so a renamed command would silently stop being
+// documented rather than fail to compile.
+func TestHelpCatalogKeysMatchRealCommands(t *testing.T) {
+	root, _, _ := newTestCLI(t, t.TempDir(), "")
+
+	known := map[string]bool{root.CommandPath(): true}
+	for _, path := range commandPaths(root) {
+		known[path] = true
+	}
+
+	for path := range helpCatalog() {
+		if !known[path] {
+			t.Errorf("help catalog documents %q, which is not a command in the tree", path)
+		}
+	}
+}
+
 func TestRuntimeFailureDoesNotPrintUsage(t *testing.T) {
 	root, out, errOut := newTestCLI(t, t.TempDir(), "")
 	root.SetArgs([]string{"transcript", "create", "/does/not/exist.mp3"})
