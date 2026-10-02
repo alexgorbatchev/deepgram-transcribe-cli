@@ -228,6 +228,28 @@ func TestJobInspectReportsStoredCost(t *testing.T) {
 	}
 }
 
+func TestJobInspectDescribesRequestedProcessingWithoutClaimingSmallerAudio(t *testing.T) {
+	for _, mode := range []string{"0", "1"} {
+		t.Run(mode, func(t *testing.T) {
+			cacheDir := t.TempDir()
+			seedJob(t, cacheDir, deepgram.JobRecord{RequestID: "req-processed", Preprocessed: true})
+			root, out, _ := newTestCLI(t, cacheDir, "")
+			t.Setenv("AGENT", mode)
+			root.SetArgs([]string{"job", "inspect", "req-processed"})
+			if err := root.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			label := "Preprocessing requested:"
+			if mode == "1" {
+				label = "preprocessing_requested:"
+			}
+			if !strings.Contains(out.String(), label) || strings.Contains(out.String(), "smaller") {
+				t.Fatalf("misleading preprocessing field: %s", out)
+			}
+		})
+	}
+}
+
 // TestJobInspectReportsHowSpeakersWereLabelled proves a stored job can say which
 // diarizer produced its speaker numbers, which is what makes two transcripts of
 // the same recording comparable.

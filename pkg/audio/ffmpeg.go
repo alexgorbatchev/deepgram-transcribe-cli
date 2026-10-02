@@ -4,9 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/alexgorbatchev/godeps"
 )
 
 const (
@@ -14,24 +15,13 @@ const (
 	DefaultSilenceDuration  = "2.0"
 )
 
-var execCommand = exec.Command
-
 // PreprocessOptions configures audio optimization parameters before API transmission.
 type PreprocessOptions struct {
-	Mono             bool   // Convert stereo audio to single channel (mono)
-	TrimSilence      bool   // Remove long silent periods/dead air
-	SilenceThreshold string // e.g. "-30dB"
-	SilenceDuration  string // e.g. "2.0" (seconds)
-}
-
-// isFFmpegAvailable reports whether the ffmpeg binary is on PATH.
-//
-// This is a guard for PreprocessAudio's own use. Deciding whether ffmpeg is fit
-// to run belongs to the caller, which checks the declared minimum version
-// through internal/deps rather than merely asking whether some ffmpeg exists.
-func isFFmpegAvailable() bool {
-	_, err := exec.LookPath("ffmpeg")
-	return err == nil
+	Mono             bool                 // Convert stereo audio to single channel (mono)
+	TrimSilence      bool                 // Remove long silent periods/dead air
+	SilenceThreshold string               // e.g. "-30dB"
+	SilenceDuration  string               // e.g. "2.0" (seconds)
+	Runner           godeps.CommandRunner // nil uses the real process runner
 }
 
 // BuildFFmpegArgs constructs command line arguments for ffmpeg audio processing.
@@ -68,10 +58,6 @@ func PreprocessAudio(ctx context.Context, inputPath string, opts PreprocessOptio
 		return inputPath, noCleanup, nil
 	}
 
-	if !isFFmpegAvailable() {
-		return "", noCleanup, fmt.Errorf("ffmpeg is required for audio preprocessing (--mono / --trim-silence) but was not found on system PATH")
-	}
-
 	ext := filepath.Ext(inputPath)
 	if ext == "" {
 		ext = ".m4a"
@@ -98,19 +84,17 @@ func PreprocessAudio(ctx context.Context, inputPath string, opts PreprocessOptio
 	}
 
 	args := BuildFFmpegArgs(inputPath, outputPath, opts)
-	cmd := execCommandWithContext(ctx, "ffmpeg", args...)
-
-	output, err := cmd.CombinedOutput()
+	runner := opts.Runner
+	if runner == nil {
+		runner = godeps.DefaultRunner
+	}
+	output, err := runner(ctx, "ffmpeg", args...)
 	if err != nil {
 		cleanup()
 		return "", noCleanup, fmt.Errorf("ffmpeg audio preprocessing failed: %w (output: %s)", err, strings.TrimSpace(string(output)))
 	}
 
 	return outputPath, cleanup, nil
-}
-
-func execCommandWithContext(ctx context.Context, name string, arg ...string) *exec.Cmd {
-	return exec.CommandContext(ctx, name, arg...)
 }
 
 // DetectMIMEType returns the MIME type corresponding to an audio file's extension.

@@ -94,8 +94,8 @@ func newRootCmd(g *globalOptions) *cobra.Command {
 		Long: `deepgram-transcribe turns any audio containing speech into a readable Markdown
 transcript, labelled with who is speaking and when they spoke.
 
-Responses are cached locally and served from cache on repeated requests, so the
-same audio is never billed twice, and it reports what each request cost.`,
+Responses are cached locally and reused on repeated requests. Use --force for a
+fresh transcription, which may be billed again. Job commands report request costs.`,
 		Version:       version,
 		SilenceErrors: true,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
@@ -123,6 +123,7 @@ same audio is never billed twice, and it reports what each request cost.`,
 		newCacheCmd(g),
 		newDependencyCmd(g),
 		newJobCmd(g),
+		newSkillCmd(),
 		newTranscriptCmd(g),
 	)
 
@@ -146,6 +147,7 @@ func setTreeHelp(root *cobra.Command) {
 	_ = cobrahelptree.SetupWithOptions(root, cobrahelptree.HelpOptions{
 		Catalog: helpCatalog(),
 		Tree:    cobrahelptree.TreeOptions{HideGeneratedCommands: true},
+		Agent:   cobrahelptree.AgentOptions{RequireSkill: true},
 	})
 }
 

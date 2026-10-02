@@ -1,8 +1,8 @@
 // Package deps declares the external programs this CLI needs at runtime and
 // manages them through godeps.
 //
-// Only ffmpeg is required, and only for making a recording smaller before it is
-// uploaded. Transcription still works without it, so a missing or outdated
+// ffmpeg prepares recordings and ffprobe measures their duration before upload.
+// Transcription still works without them, so a missing or outdated
 // ffmpeg is reported rather than treated as fatal.
 package deps
 
@@ -17,6 +17,8 @@ const (
 
 	// FFmpeg is the program that merges stereo to mono and cuts dead air.
 	FFmpeg = "ffmpeg"
+	// FFprobe measures audio duration before selecting a prepared upload.
+	FFprobe = "ffprobe"
 
 	// minFFmpegVersion is the oldest ffmpeg this project supports. 4.4 was
 	// released in April 2021 and is a conservative floor: older builds may well
@@ -35,6 +37,13 @@ func Declared() []godeps.Dependency {
 			MinVersion: minFFmpegVersion,
 			InstallURL: ffmpegInstallURL,
 			// ffmpeg prints its banner for -version, not --version.
+			VersionArgs: []string{"-version"},
+			Installer:   godeps.SystemPackageManager(FFmpeg),
+		},
+		{
+			Name:        FFprobe,
+			MinVersion:  minFFmpegVersion,
+			InstallURL:  ffmpegInstallURL,
 			VersionArgs: []string{"-version"},
 			Installer:   godeps.SystemPackageManager(FFmpeg),
 		},

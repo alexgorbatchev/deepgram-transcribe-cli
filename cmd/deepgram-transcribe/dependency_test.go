@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/alexgorbatchev/deepgram-transcribe-cli/internal/deps"
 )
 
 func TestDependencyListReportsEachProgram(t *testing.T) {
@@ -45,7 +47,7 @@ func TestDependencyListReportsEachProgram(t *testing.T) {
 			}
 
 			listing := out.String()
-			for _, want := range []string{"ffmpeg", tt.wantStatus, tt.wantShown} {
+			for _, want := range []string{"ffmpeg", "ffprobe", tt.wantStatus, tt.wantShown} {
 				if !strings.Contains(listing, want) {
 					t.Errorf("expected %q in the listing, got:\n%s", want, listing)
 				}
@@ -77,6 +79,11 @@ func TestDependencyListIsTabSeparatedForAgents(t *testing.T) {
 // apt with a runner that cannot be replaced from outside godeps, so a test must
 // never reach a branch that would actually install anything.
 func TestDependencyInstallSkipsWhatIsAlreadyThere(t *testing.T) {
+	// Verify the fixture before entering a handler whose installer cannot be
+	// replaced; a bad banner must fail the test without invoking a package manager.
+	if _, err := deps.NewManager(stubRunner(ffmpegVersionOutput, nil)).Verify(t.Context()); err != nil {
+		t.Fatalf("unsafe install fixture: %v", err)
+	}
 	root, _, errOut := newTestCLIWithRunner(t, t.TempDir(), "", stubRunner(ffmpegVersionOutput, nil))
 	root.SetArgs([]string{"dependency", "install"})
 

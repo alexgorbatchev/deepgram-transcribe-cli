@@ -2,10 +2,51 @@ package audio
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestPreprocessExtensionlessAudio(t *testing.T) {
+	t.Chdir(t.TempDir())
+	path, cleanup, err := PreprocessAudio(t.Context(), "recording", PreprocessOptions{
+		TrimSilence: true,
+		Runner: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name != "ffmpeg" || !strings.HasSuffix(args[len(args)-1], ".m4a") ||
+				!strings.Contains(strings.Join(args, " "), "stop_duration=2.0:stop_threshold=-30dB") {
+				t.Fatalf("unexpected encoding arguments: %s %v", name, args)
+			}
+			return nil, os.WriteFile(args[len(args)-1], []byte("encoded"), 0o600)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup()
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("output remains after cleanup: %v", err)
+	}
+}
+
+func TestPreprocessRejectsBlockedTempDirectory(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile(".tmp", []byte("occupied"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path, cleanup, err := PreprocessAudio(t.Context(), "recording.wav", PreprocessOptions{
+		Mono: true,
+		Runner: func(context.Context, string, ...string) ([]byte, error) {
+			t.Fatal("encoder ran despite unavailable temporary directory")
+			return nil, nil
+		},
+	})
+	cleanup()
+	if path != "" || err == nil || !strings.Contains(err.Error(), "creating temp audio directory") {
+		t.Fatalf("got path %q, error %v", path, err)
+	}
+}
 
 func TestBuildFFmpegArgs(t *testing.T) {
 	opts := PreprocessOptions{
@@ -92,21 +133,24 @@ func TestPreprocessAudioNoOp(t *testing.T) {
 }
 
 func TestPreprocessAudioWithFFmpeg(t *testing.T) {
-	if !isFFmpegAvailable() {
-		t.Skip("ffmpeg not found on system PATH, skipping integration test")
-	}
-
 	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("PATH", t.TempDir())
 
 	inputFile := filepath.Join(dir, "test-input.wav")
-	cmd := execCommand("ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=1000:duration=3", "-ac", "2", inputFile)
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("failed to create test audio file via ffmpeg: %v", err)
+	if err := os.WriteFile(inputFile, []byte("source"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 
 	opts := PreprocessOptions{
 		Mono:        true,
 		TrimSilence: false,
+		Runner: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			if name != "ffmpeg" || args[2] != inputFile {
+				t.Fatalf("unexpected preprocessing call: %s %v", name, args)
+			}
+			return nil, os.WriteFile(args[len(args)-1], []byte("prepared audio"), 0o600)
+		},
 	}
 
 	processedPath, cleanup, err := PreprocessAudio(context.Background(), inputFile, opts)
@@ -122,5 +166,30 @@ func TestPreprocessAudioWithFFmpeg(t *testing.T) {
 	info, err := os.Stat(processedPath)
 	if err != nil || info.Size() == 0 {
 		t.Errorf("processed file does not exist or is empty: %v", err)
+	}
+	cleanup()
+	if _, err := os.Stat(processedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("prepared audio was not cleaned up: %v", err)
+	}
+}
+
+func TestPreprocessAudioCleansUpAfterFailure(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+	want := errors.New("encoding failed")
+	var outputPath string
+	path, cleanup, err := PreprocessAudio(context.Background(), "input.opus", PreprocessOptions{
+		Mono: true,
+		Runner: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			outputPath = args[len(args)-1]
+			return []byte("encoder diagnostic"), want
+		},
+	})
+	cleanup()
+	if path != "" || !errors.Is(err, want) {
+		t.Fatalf("got path %q err %v", path, err)
+	}
+	if _, err := os.Stat(outputPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed output retained: %v", err)
 	}
 }

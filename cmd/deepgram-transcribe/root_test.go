@@ -31,7 +31,7 @@ func stubRunner(output string, err error) godeps.CommandRunner {
 		if err != nil {
 			return nil, err
 		}
-		return []byte(output), nil
+		return []byte(strings.Replace(output, "ffmpeg version", name+" version", 1)), nil
 	}
 }
 
@@ -124,15 +124,20 @@ func TestRootCommandUsesSubjectVerbStructure(t *testing.T) {
 }
 
 func TestVersionPrintsOnlyTheVersion(t *testing.T) {
-	root, out, _ := newTestCLI(t, t.TempDir(), "")
-	root.SetArgs([]string{"--version"})
+	for _, mode := range []string{"", "0", "1", "true", "yes"} {
+		t.Run("AGENT="+mode, func(t *testing.T) {
+			root, out, _ := newTestCLI(t, t.TempDir(), "")
+			t.Setenv("AGENT", mode)
+			root.SetArgs([]string{"--version"})
 
-	if err := root.Execute(); err != nil {
-		t.Fatalf("--version failed: %v", err)
-	}
+			if err := root.Execute(); err != nil {
+				t.Fatalf("--version failed: %v", err)
+			}
 
-	if got := out.String(); got != version+"\n" {
-		t.Errorf("--version printed %q, want %q", got, version+"\n")
+			if got := out.String(); got != version+"\n" {
+				t.Errorf("--version printed %q, want %q", got, version+"\n")
+			}
+		})
 	}
 }
 
@@ -392,42 +397,34 @@ func TestHelpCatalogKeysMatchRealCommands(t *testing.T) {
 // the renderer clips. A line wider than the terminal wraps, and a wrapped line
 // destroys the description column the tree exists to provide.
 //
-// Eighty columns is the conventional minimum, and the command descriptions in
-// this CLI are written to fit it. Width is counted in runes, which equals
-// terminal cells here because the screens hold ASCII and single-cell box-drawing
-// glyphs only.
+// Count every line, including the footer and generated-command descriptions.
+// These screens contain ASCII and single-cell box-drawing glyphs only.
 func TestHelpFitsTheTerminalWidth(t *testing.T) {
-	const columns = 80
+	for _, columns := range []int{20, 40, 60, 80, 100} {
+		for _, args := range [][]string{
+			{"--help"},
+			{"dependency", "--help"},
+			{"job", "inspect", "--help"},
+			{"transcript", "create", "--help"},
+			{"skill", "--help"},
+			{"completion", "bash", "--help"},
+		} {
+			t.Run(strings.Join(args, " "), func(t *testing.T) {
+				root, out, _ := newTestCLI(t, t.TempDir(), "")
+				t.Setenv("COLUMNS", strconv.Itoa(columns))
+				root.SetArgs(args)
 
-	for _, args := range [][]string{
-		{"--help"},
-		{"dependency", "--help"},
-		{"job", "inspect", "--help"},
-		{"transcript", "create", "--help"},
-	} {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			root, out, _ := newTestCLI(t, t.TempDir(), "")
-			t.Setenv("COLUMNS", strconv.Itoa(columns))
-			root.SetArgs(args)
-
-			if err := root.Execute(); err != nil {
-				t.Fatalf("%v failed: %v", args, err)
-			}
-
-			for _, line := range strings.Split(out.String(), "\n") {
-				// cobra-help-tree emits this footer verbatim, interpolating the
-				// command path, and wraps neither it nor its own width budget
-				// around it. Reported upstream as the lesser half of
-				// alexgorbatchev/cobra-help-tree#3; nothing here can shorten it.
-				if strings.HasPrefix(line, `Use "`) {
-					continue
+				if err := root.Execute(); err != nil {
+					t.Fatalf("%v failed: %v", args, err)
 				}
 
-				if width := utf8.RuneCountInString(line); width > columns {
-					t.Errorf("line is %d cells wide, over the %d column budget: %q", width, columns, line)
+				for _, line := range strings.Split(out.String(), "\n") {
+					if width := utf8.RuneCountInString(line); width > columns {
+						t.Errorf("line is %d cells wide, over the %d column budget: %q", width, columns, line)
+					}
 				}
-			}
-		})
+			})
+		}
 	}
 }
 

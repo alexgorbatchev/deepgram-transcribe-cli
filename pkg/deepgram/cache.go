@@ -61,24 +61,29 @@ func CacheKey(audioData []byte, opts Options) string {
 
 // GetCachedResponse attempts to load a previously saved Deepgram response from cacheDir.
 func GetCachedResponse(cacheDir, key string) (*PreRecordedResponse, error) {
-	env, err := GetJobEnvelope(cacheDir, key)
-	if err == nil && env.Response != nil {
-		return env.Response, nil
-	}
-
-	// Fallback for raw PreRecordedResponse JSON files (e.g. unwrapped response dumps or test fixtures)
 	cachePath := filepath.Join(cacheDir, key+".json")
 	data, readErr := os.ReadFile(cachePath)
 	if readErr != nil {
 		return nil, fmt.Errorf("reading cache file %q: %w", cachePath, readErr)
 	}
 
-	var resp PreRecordedResponse
-	if jsonErr := json.Unmarshal(data, &resp); jsonErr != nil {
+	// Decode the two stored formats together. A history-only envelope is not
+	// an empty transcription: it contains no response to serve.
+	var stored struct {
+		*PreRecordedResponse
+		Record   *JobRecord           `json:"record"`
+		Response *PreRecordedResponse `json:"response"`
+	}
+	if jsonErr := json.Unmarshal(data, &stored); jsonErr != nil {
 		return nil, fmt.Errorf("decoding cached response JSON: %w", jsonErr)
 	}
-
-	return &resp, nil
+	if stored.Response != nil {
+		return stored.Response, nil
+	}
+	if stored.Record != nil || stored.PreRecordedResponse == nil {
+		return nil, fmt.Errorf("cache file %q contains no transcription response", cachePath)
+	}
+	return stored.PreRecordedResponse, nil
 }
 
 // FindCachedJobBySourceSHA scans cacheDir for any cached job envelope matching raw sourceSHA.

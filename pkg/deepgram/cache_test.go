@@ -221,6 +221,20 @@ func TestGetCachedResponseErrors(t *testing.T) {
 	}
 }
 
+func TestGetCachedResponseRejectsHistoryWithoutResponse(t *testing.T) {
+	for _, body := range []string{`{"record":{"request_id":"history-only"},"response":null}`, `{"record":{}}`, `{}`} {
+		t.Run(body, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "history.json"), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if response, err := GetCachedResponse(dir, "history"); err == nil || response != nil {
+				t.Fatalf("accepted history as a transcript: response=%+v err=%v", response, err)
+			}
+		})
+	}
+}
+
 func TestFindCachedJobBySourceSHAErrors(t *testing.T) {
 	dir := t.TempDir()
 

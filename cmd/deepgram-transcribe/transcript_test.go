@@ -9,9 +9,169 @@ import (
 	"testing"
 	"time"
 
+	"bytes"
+	"context"
+	"errors"
+	"github.com/alexgorbatchev/deepgram-transcribe-cli/internal/cliout"
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/deepgram"
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/terms"
 )
+
+func TestPrepareUploadReportsLargerAudio(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if len(args) == 1 && args[0] == "-version" {
+			return []byte(strings.Replace(ffmpegVersionOutput, "ffmpeg version", name+" version", 1)), nil
+		}
+		if name == "ffprobe" {
+			if strings.Contains(args[len(args)-1], "transcribe-proc-") {
+				return []byte(`{"streams":[{"duration":"5"}]}`), nil
+			}
+			return []byte(`{"streams":[{"duration":"10"}]}`), nil
+		}
+		return nil, os.WriteFile(args[len(args)-1], []byte("larger processed recording"), 0o600)
+	}
+	root, out, stderr := newTestCLIWithRunner(t, t.TempDir(), "", runner)
+	root.SetContext(t.Context())
+	t.Setenv("PATH", t.TempDir())
+	audioPath := writeAudio(t, dir, "recording.opus", "source")
+	run := &transcriptRun{
+		cmd: root, out: cliout.New(out, stderr),
+		global: &globalOptions{depsRunner: runner},
+		opts:   &transcriptOptions{}, audioPath: audioPath,
+	}
+	if err := run.loadSource(); err != nil {
+		t.Fatal(err)
+	}
+	cleanup, err := run.prepareUpload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if !strings.Contains(stderr.String(), "up from 6 B") || strings.Contains(stderr.String(), "Upload is 26 B, down from") || out.Len() != 0 {
+		t.Fatalf("incorrect size reporting: %s", stderr)
+	}
+	if run.uploadPath == audioPath {
+		t.Fatal("prepared upload was not selected")
+	}
+}
+
+func TestPrepareUploadRequiresShorterDuration(t *testing.T) {
+	for _, mode := range []string{"0", "1"} {
+		for _, tc := range []struct {
+			name, duration string
+			shorter        bool
+		}{
+			{"shorter", "5", true}, {"equal", "10", false}, {"longer", "12", false},
+			{"unknown", "N/A", false},
+			{"original unknown", "5", false},
+			{"probe failed", "5", false},
+			{"mono only", "10", false},
+		} {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				t.Chdir(t.TempDir())
+				t.Setenv("AGENT", mode)
+				var prepared string
+				runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+					if len(args) == 1 {
+						return []byte(strings.Replace(ffmpegVersionOutput, "ffmpeg version", name+" version", 1)), nil
+					}
+					if name == "ffprobe" {
+						if tc.name == "probe failed" {
+							return nil, errors.New("duration probe failed")
+						}
+						duration := "10"
+						if tc.name == "original unknown" {
+							duration = "N/A"
+						}
+						if args[len(args)-1] == prepared {
+							duration = tc.duration
+						}
+						return []byte(`{"streams":[{"duration":"` + duration + `"}]}`), nil
+					}
+					prepared = args[len(args)-1]
+					return nil, os.WriteFile(prepared, []byte("larger prepared audio"), 0o600)
+				}
+				root, out, stderr := newTestCLIWithRunner(t, t.TempDir(), "", runner)
+				root.SetContext(t.Context())
+				audioPath := writeAudio(t, t.TempDir(), "recording.opus", "source")
+				run := &transcriptRun{cmd: root, out: cliout.New(out, stderr), global: &globalOptions{depsRunner: runner}, opts: &transcriptOptions{}, audioPath: audioPath}
+				run.opts.noTrimSilence = tc.name == "mono only"
+				if err := run.loadSource(); err != nil {
+					t.Fatal(err)
+				}
+				cleanup, err := run.prepareUpload()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer cleanup()
+				if (run.uploadPath != audioPath) != tc.shorter {
+					t.Fatalf("wrong upload selection: %s; %s", run.uploadPath, stderr)
+				}
+				if out.Len() != 0 {
+					t.Fatalf("diagnostic leaked to stdout: %s", out)
+				}
+				if !tc.shorter {
+					if _, err := os.Stat(prepared); !os.IsNotExist(err) {
+						t.Fatalf("discarded audio retained: %v", err)
+					}
+					if !strings.Contains(stderr.String(), "original audio") {
+						t.Fatalf("missing fallback explanation: %s", stderr)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestPrepareUploadWithoutFFprobe(t *testing.T) {
+	runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if len(args) != 1 || args[0] != "-version" {
+			t.Fatalf("preprocessing ran without ffprobe: %s %v", name, args)
+		}
+		if name == "ffprobe" {
+			return nil, errors.New("ffprobe missing")
+		}
+		return []byte(ffmpegVersionOutput), nil
+	}
+	root, out, stderr := newTestCLIWithRunner(t, t.TempDir(), "", runner)
+	root.SetContext(t.Context())
+	audioPath := writeAudio(t, t.TempDir(), "recording.opus", "source")
+	run := &transcriptRun{cmd: root, out: cliout.New(out, stderr), global: &globalOptions{depsRunner: runner}, opts: &transcriptOptions{}, audioPath: audioPath}
+	if err := run.loadSource(); err != nil {
+		t.Fatal(err)
+	}
+	cleanup, err := run.prepareUpload()
+	defer cleanup()
+	if err != nil || run.uploadPath != audioPath || !strings.Contains(stderr.String(), "ffprobe") || out.Len() != 0 {
+		t.Fatalf("incorrect missing-probe handling: %v %s", err, stderr)
+	}
+}
+
+func TestUploadSizeComparison(t *testing.T) {
+	for _, mode := range []string{"0", "1"} {
+		for _, tc := range []struct {
+			name string
+			size int64
+			want string
+		}{
+			{"smaller", 500, "Upload is 500 B, down from 1000 B."},
+			{"larger", 1500, "Upload is 1.5 KB, up from 1000 B."},
+			{"unchanged", 1000, "Upload is 1000 B, unchanged from the original."},
+		} {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				t.Setenv("AGENT", mode)
+				var out, stderr bytes.Buffer
+				run := &transcriptRun{out: cliout.New(&out, &stderr), audioSize: 1000}
+				run.reportUploadSize(tc.size)
+				if !strings.Contains(stderr.String(), tc.want) || out.Len() != 0 {
+					t.Fatalf("got stdout %q stderr %q, want %q on stderr", out.String(), stderr.String(), tc.want)
+				}
+			})
+		}
+	}
+}
 
 const transcribeResponseJSON = `{
 	"metadata": {"request_id": "mock-req-001", "duration": 5.2, "channels": 1},
@@ -228,6 +388,48 @@ func TestTranscriptCreateWarnsWhenCachedKeytermsDiffer(t *testing.T) {
 	}
 }
 
+func TestRepeatedSourceCacheHitsPreserveTranscriptAndHistory(t *testing.T) {
+	cacheDir := t.TempDir()
+	audioBytes := "original recording"
+	audioPath := writeAudio(t, t.TempDir(), "interview.m4a", audioBytes)
+	envelope := deepgram.JobRecordEnvelope{
+		Record: deepgram.JobRecord{
+			RequestID: "cached-original", SHA256: "original-key",
+			SourceSHA256: deepgram.SourceAudioKey([]byte(audioBytes)),
+			Model:        "nova-3", Terms: []string{"Original"}, CostUSD: "$0.123", CostIsActual: true,
+		},
+		Response: &deepgram.PreRecordedResponse{
+			Metadata: deepgram.Metadata{RequestID: "cached-original", Duration: 5.2, Channels: 1},
+			Results:  deepgram.Results{Utterances: []deepgram.Utterance{{Transcript: "Original cached transcript"}}},
+		},
+	}
+	if err := deepgram.SaveJobEnvelope(cacheDir, "original-key", envelope); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.ReadFile(filepath.Join(cacheDir, "original-key.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		root, out, _ := newTestCLI(t, cacheDir, "")
+		root.SetArgs([]string{"transcript", "create", audioPath, "--no-preprocess", "-t", "Changed"})
+		if err := root.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), "Original cached transcript") {
+			t.Fatalf("cached response lost: %s", out)
+		}
+	}
+	files, err := os.ReadDir(cacheDir)
+	if err != nil || len(files) != 1 {
+		t.Fatalf("cache hits created additional job records: count=%d err=%v", len(files), err)
+	}
+	stored, err := os.ReadFile(filepath.Join(cacheDir, "original-key.json"))
+	if err != nil || !bytes.Equal(stored, original) {
+		t.Fatalf("cache hits changed original history: %v", err)
+	}
+}
+
 func TestTranscriptCreateForceIgnoresSavedTranscript(t *testing.T) {
 	fresh := `{
 		"metadata": {"request_id": "fresh-forced-req-002", "duration": 12.0, "channels": 1},
@@ -293,7 +495,7 @@ func TestTranscriptCreateContinuesWithoutFFmpeg(t *testing.T) {
 	if !strings.Contains(stderr, "ffmpeg") {
 		t.Errorf("expected ffmpeg to be named in the warning, got: %s", stderr)
 	}
-	if !strings.Contains(stderr, "Uploading the audio unprocessed") {
+	if !strings.Contains(stderr, "Uploading original audio without preprocessing") {
 		t.Errorf("expected the consequence to be explained, got: %s", stderr)
 	}
 	if !strings.Contains(stderr, "dependency install") {

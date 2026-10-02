@@ -18,15 +18,15 @@ func stubRunner(output string, err error) godeps.CommandRunner {
 		if err != nil {
 			return nil, err
 		}
-		return []byte(output), nil
+		return []byte(strings.Replace(output, "ffmpeg version", name+" version", 1)), nil
 	}
 }
 
 func TestDeclaredRequiresFFmpeg(t *testing.T) {
 	declared := Declared()
 
-	if len(declared) != 1 {
-		t.Fatalf("expected exactly one declared program, got %d", len(declared))
+	if len(declared) != 2 {
+		t.Fatalf("expected two declared programs, got %d", len(declared))
 	}
 
 	ffmpeg := declared[0]

@@ -27,6 +27,7 @@ func newDependencyCmd(g *globalOptions) *cobra.Command {
 func newDependencyListCmd(g *globalOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
+		Args:  cobra.NoArgs,
 		Short: "List required programs and their status",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cliout.New(cmd.OutOrStdout(), cmd.ErrOrStderr())
@@ -59,6 +60,7 @@ func newDependencyListCmd(g *globalOptions) *cobra.Command {
 func newDependencyInstallCmd(g *globalOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:   "install",
+		Args:  cobra.NoArgs,
 		Short: "Install missing or outdated programs",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cliout.New(cmd.OutOrStdout(), cmd.ErrOrStderr())
@@ -86,6 +88,7 @@ func newDependencyInstallCmd(g *globalOptions) *cobra.Command {
 func newDependencyUpdateCmd(g *globalOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:   "update",
+		Args:  cobra.NoArgs,
 		Short: "Update required programs to their latest versions",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cliout.New(cmd.OutOrStdout(), cmd.ErrOrStderr())

@@ -26,6 +26,7 @@ func newCacheCmd(g *globalOptions) *cobra.Command {
 func newCacheStatusCmd(g *globalOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
+		Args:  cobra.NoArgs,
 		Short: "Show the cache location and how many responses are stored",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cliout.New(cmd.OutOrStdout(), cmd.ErrOrStderr())
@@ -49,6 +50,7 @@ func newCacheStatusCmd(g *globalOptions) *cobra.Command {
 func newCacheClearCmd(g *globalOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:   "clear",
+		Args:  cobra.NoArgs,
 		Short: "Delete all cached responses and job history",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cliout.New(cmd.OutOrStdout(), cmd.ErrOrStderr())

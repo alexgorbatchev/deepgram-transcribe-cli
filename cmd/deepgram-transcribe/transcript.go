@@ -132,9 +132,10 @@ type transcriptRun struct {
 	sourceKey  string
 	optionsKey string
 
-	uploadPath string
-	response   *deepgram.PreRecordedResponse
-	cost       string
+	uploadPath      string
+	response        *deepgram.PreRecordedResponse
+	cost            string
+	servedFromCache bool
 }
 
 func runTranscriptCreate(cmd *cobra.Command, g *globalOptions, opts *transcriptOptions, audioPath string) error {
@@ -242,6 +243,7 @@ func (r *transcriptRun) serveCachedResponse() {
 		r.out.Status("Cache hit for %s, serving the cached response.", name)
 		r.out.Detail("cache_key: %s", r.optionsKey)
 		r.response = cached
+		r.servedFromCache = true
 		return
 	}
 
@@ -264,22 +266,28 @@ func (r *transcriptRun) serveCachedResponse() {
 	r.out.Detail("cache_key: %s", envelope.Record.SHA256)
 
 	r.response = envelope.Response
+	r.servedFromCache = true
 }
 
-// ffmpegReady reports whether ffmpeg can be used to shrink the recording, and
+// preprocessingReady reports whether ffmpeg and ffprobe can prepare and measure audio, and
 // explains on stderr when it cannot.
 //
-// A missing or outdated ffmpeg is not fatal. The audio is uploaded unprocessed,
-// which increases the billed duration but still produces a transcript, so this
+// A missing or outdated tool is not fatal. The audio is uploaded unprocessed,
+// which may retain billable silence but still produces a transcript, so this
 // reports the problem and lets the run continue.
-func (r *transcriptRun) ffmpegReady() bool {
-	// Verify returns an error when anything is unsatisfied. Only ffmpeg matters
-	// here, so the report for it is what decides, not the overall result.
+func (r *transcriptRun) preprocessingReady() bool {
+	// Inspect both reports so diagnostics identify the unavailable tool.
 	reports, _ := r.global.newDependencyManager().Verify(r.cmd.Context())
 
 	report, found := deps.Find(reports, deps.FFmpeg)
 	if found && report.Satisfied {
-		return true
+		probe, probeFound := deps.Find(reports, deps.FFprobe)
+		if probeFound && probe.Satisfied {
+			return true
+		}
+		r.out.Warn("ffprobe is not usable; uploading original audio without preprocessing.")
+		r.out.Hint("Run `deepgram-transcribe dependency install` to set ffprobe up.")
+		return false
 	}
 
 	if found && report.Error != "" {
@@ -288,14 +296,14 @@ func (r *transcriptRun) ffmpegReady() bool {
 		r.out.Warn("ffmpeg is not usable.")
 	}
 
-	r.out.Status("Uploading the audio unprocessed, which increases the billed duration.")
+	r.out.Status("Uploading original audio without preprocessing.")
 	r.out.Hint("Run `deepgram-transcribe dependency install` to set ffmpeg up.")
 
 	return false
 }
 
-// prepareUpload makes the recording cheaper to transcribe by merging stereo into
-// one channel and cutting long silences. It is skipped when a cached response
+// prepareUpload selects prepared audio only when it is shorter than the source.
+// It is skipped when a cached response
 // already answered the request, because nothing will be uploaded.
 //
 // The returned function removes the temporary audio and is safe to call even
@@ -310,7 +318,7 @@ func (r *transcriptRun) prepareUpload() (func(), error) {
 		return noCleanup, nil
 	}
 
-	if !r.ffmpegReady() {
+	if !r.preprocessingReady() {
 		return noCleanup, nil
 	}
 
@@ -322,18 +330,54 @@ func (r *transcriptRun) prepareUpload() (func(), error) {
 		TrimSilence:      r.opts.wantsTrimSilence(),
 		SilenceThreshold: r.opts.silenceThreshold,
 		SilenceDuration:  r.opts.silenceDuration,
+		Runner:           r.global.depsRunner,
 	})
 	if err != nil {
 		return noCleanup, fmt.Errorf("preparing audio for upload: %w", err)
 	}
 
+	originalDuration, originalErr := audio.Duration(r.cmd.Context(), r.audioPath, r.global.depsRunner)
+	processedDuration, processedErr := audio.Duration(r.cmd.Context(), processed, r.global.depsRunner)
+	if originalErr != nil || processedErr != nil {
+		cleanup()
+		if err := r.cmd.Context().Err(); err != nil {
+			return noCleanup, err
+		}
+		r.out.Warn("Could not compare audio durations; uploading original audio.")
+		if originalErr != nil {
+			r.out.Detail("%v", originalErr)
+		}
+		if processedErr != nil {
+			r.out.Detail("%v", processedErr)
+		}
+		return noCleanup, nil
+	}
+	if processedDuration >= originalDuration {
+		cleanup()
+		r.out.Status("Processed audio is %.3f s, original is %.3f s; uploading original audio because processing did not shorten it.", processedDuration, originalDuration)
+		return noCleanup, nil
+	}
+	r.out.Status("Audio duration is %.3f s, down from %.3f s.", processedDuration, originalDuration)
 	r.uploadPath = processed
 
 	if info, err := os.Stat(processed); err == nil {
-		r.out.Status("Upload is %s, down from %s.", formatFileSize(info.Size()), formatFileSize(r.audioSize))
+		r.reportUploadSize(info.Size())
 	}
 
 	return cleanup, nil
+}
+
+// Preprocessing changes duration and channels, but re-encoding can increase the
+// byte count. Report the measured comparison rather than promising a reduction.
+func (r *transcriptRun) reportUploadSize(size int64) {
+	switch {
+	case size < r.audioSize:
+		r.out.Status("Upload is %s, down from %s.", formatFileSize(size), formatFileSize(r.audioSize))
+	case size > r.audioSize:
+		r.out.Status("Upload is %s, up from %s.", formatFileSize(size), formatFileSize(r.audioSize))
+	default:
+		r.out.Status("Upload is %s, unchanged from the original.", formatFileSize(size))
+	}
 }
 
 // fetchTranscript asks Deepgram to transcribe the recording, unless a saved
@@ -411,7 +455,7 @@ func (r *transcriptRun) recordJob() {
 
 	r.cost = deepgram.CalculateCostWithOptions(duration, channels, r.request)
 
-	if r.opts.noCache {
+	if r.opts.noCache || r.servedFromCache {
 		return
 	}
 

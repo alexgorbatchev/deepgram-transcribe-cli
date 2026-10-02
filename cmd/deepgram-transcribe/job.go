@@ -37,6 +37,7 @@ func newJobListCmd(g *globalOptions) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "list",
+		Args:  cobra.NoArgs,
 		Short: "List past transcriptions and total spending",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runJobList(cmd, g, limit)
@@ -163,7 +164,7 @@ func runJobInspect(cmd *cobra.Command, g *globalOptions, target string) error {
 	fields.
 		Add("Duration", "%s", deepgram.FormatSeconds(record.DurationSeconds)).
 		Add("Channels", "%d", record.Channels).
-		Add("Made smaller first", "%t", record.Preprocessed).
+		Add("Preprocessing requested", "%t", record.Preprocessed).
 		Add("Model", "%s", record.Model).
 		Add("Speaker labels", "%s", describeDiarizer(record.DiarizeModel))
 
