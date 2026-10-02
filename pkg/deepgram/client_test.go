@@ -10,6 +10,86 @@ import (
 	"time"
 )
 
+func TestManagementResponseFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{"forbidden", http.StatusForbidden, "", "Member/Admin scope"},
+		{"server error", http.StatusInternalServerError, "unavailable", "HTTP 500: unavailable"},
+		{"invalid JSON", http.StatusOK, "{", "JSON"},
+		{"empty list", http.StatusOK, `{}`, "no projects found"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				writeStub(t, w, []byte(tc.body))
+			}))
+			defer server.Close()
+			client := NewClient("test", WithEndpoint(server.URL))
+			_, err := client.GetProjectID(t.Context())
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q, got %v", tc.want, err)
+			}
+			_, err = client.GetRequestCostFormatted(t.Context(), "request")
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected project failure propagation, got %v", err)
+			}
+		})
+	}
+}
+
+func TestRequestCostInvalidDetails(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, want string
+		status           int
+	}{
+		{"server error", "pending", "HTTP 503: pending", http.StatusServiceUnavailable},
+		{"empty", "", "unavailable", http.StatusOK},
+		{"malformed", "{", "decoding request details JSON", http.StatusOK},
+		{"missing response", `{}`, "USD field missing", http.StatusOK},
+		{"missing details", `{"response":{}}`, "USD field missing", http.StatusOK},
+		{"missing USD", `{"response":{"details":{}}}`, "USD field missing", http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1/projects" {
+					writeStub(t, w, []byte(`{"projects":[{"project_id":"project"}]}`))
+					return
+				}
+				w.WriteHeader(tc.status)
+				writeStub(t, w, []byte(tc.body))
+			}))
+			defer server.Close()
+			_, err := NewClient("test", WithEndpoint(server.URL)).GetRequestCost(t.Context(), "request")
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestTranscribeInvalidJSONAndCanceledContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeStub(t, w, []byte("{"))
+	}))
+	defer server.Close()
+	client := NewClient("test", WithEndpoint(server.URL))
+	if _, err := client.Transcribe(t.Context(), strings.NewReader("audio"), "audio/ogg", Options{}); err == nil || !strings.Contains(err.Error(), "JSON") {
+		t.Fatalf("expected decoding error, got %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := client.Transcribe(ctx, strings.NewReader("audio"), "audio/ogg", Options{}); err == nil || !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("expected canceled request, got %v", err)
+	}
+	if _, err := client.GetProjectID(ctx); err == nil || !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("expected canceled project lookup, got %v", err)
+	}
+}
+
 // writeStub sends a canned response body from a stub Deepgram server and fails
 // the test if it cannot be delivered, since every assertion downstream depends
 // on the client receiving it.

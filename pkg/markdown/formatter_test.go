@@ -8,6 +8,41 @@ import (
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/deepgram"
 )
 
+func TestFormatMissingAndEmptyTranscripts(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		response *deepgram.PreRecordedResponse
+		want     string
+	}{
+		{"missing", nil, "*(No transcript data available)*"},
+		{"no channels", &deepgram.PreRecordedResponse{}, "*(Empty transcript)*"},
+		{"no alternatives", &deepgram.PreRecordedResponse{Results: deepgram.Results{Channels: []deepgram.Channel{{}}}}, "*(Empty transcript)*"},
+		{"blank alternative", &deepgram.PreRecordedResponse{Results: deepgram.Results{Channels: []deepgram.Channel{{Alternatives: []deepgram.Alternative{{Transcript: " \t "}}}}}}, "*(Empty transcript)*"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Format(tc.response, MetaInfo{Filename: "memo"}); !strings.Contains(got, tc.want) {
+				t.Fatalf("missing %q in %s", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestFormatSummarizesTermsAndSkipsBlankUtterances(t *testing.T) {
+	terms := make([]string, 16)
+	for i := range terms {
+		terms[i] = "visible"
+	}
+	terms[15] = "hidden"
+	got := Format(&deepgram.PreRecordedResponse{Results: deepgram.Results{Utterances: []deepgram.Utterance{
+		{Speaker: 9, Transcript: " \t "},
+		{Speaker: 1, Transcript: " spoken "},
+	}}}, MetaInfo{KeyTerms: terms})
+	if !strings.Contains(got, "*(and 1 more)*") || strings.Contains(got, "hidden") ||
+		strings.Contains(got, "Speaker 9") || !strings.Contains(got, "\n\nspoken\n\n") {
+		t.Fatalf("incorrect terms or utterance formatting: %s", got)
+	}
+}
+
 // TestTranscriptHeadingDoesNotAssumeAConversation pins the section heading. The
 // input is any audio containing speech, which may be a single speaker, so the
 // heading must not call it a conversation.

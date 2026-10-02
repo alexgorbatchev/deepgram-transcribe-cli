@@ -3,9 +3,30 @@ package deepgram
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestSaveJobEnvelopeFailures(t *testing.T) {
+	dir := t.TempDir()
+	blocked := filepath.Join(dir, "blocked")
+	if err := os.WriteFile(blocked, []byte("occupied"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveJobEnvelope(blocked, "key", JobRecordEnvelope{}); err == nil || !strings.Contains(err.Error(), "creating cache directory") {
+		t.Fatalf("expected directory creation failure, got %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "key.json"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveJobEnvelope(dir, "key", JobRecordEnvelope{}); err == nil || !strings.Contains(err.Error(), "writing job envelope") {
+		t.Fatalf("expected blocked output failure, got %v", err)
+	}
+	if err := SaveJobEnvelope(dir, "invalid-time", JobRecordEnvelope{Record: JobRecord{Timestamp: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)}}); err == nil || !strings.Contains(err.Error(), "encoding job envelope") {
+		t.Fatalf("expected unsupported timestamp encoding failure, got %v", err)
+	}
+}
 
 func TestSaveAndGetJobRecord(t *testing.T) {
 	dir := t.TempDir()
