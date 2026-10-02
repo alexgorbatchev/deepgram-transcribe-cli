@@ -1,40 +1,35 @@
-`deepgram-transcribe` turns any audio containing speech into a readable Markdown transcript, labelled with who is speaking and when they spoke. Deepgram responses are cached locally and served from cache on repeated requests, so the same audio is never billed twice, and it reports what each request was billed.
+`deepgram-transcribe` turns recorded speech into Markdown for people reviewing interviews, meetings, lectures or voice notes. It labels speakers, reuses locally cached transcripts and keeps a history of transcription costs.
 
 # What It Does
 
-- **Readable transcripts**: Produces Markdown with a metadata table, speaker turns (`### Speaker 0 (00:00 - 00:15)`) and timestamps.
-- **Speaker diarization**: Separates and labels each speaker in the audio.
-- **Engineering keyterms**: Ships with a built-in vocabulary of engineering and system design terms, so technical words are recognised correctly.
-- **Your own keyterms**: Add company, people or product names with `--term` or `--terms-file`.
-- **Response caching**: Caches Deepgram responses keyed by audio content, and serves them on repeated requests even when the request options have changed, so the same audio is never billed twice.
-- **Cheaper uploads**: Merges stereo to mono and cuts dead air before uploading, which roughly halves the billed audio.
-- **Spending history**: Reports the real billed cost of each transcription and the running total.
-- **Built for people and for agents**: The same commands produce polished output in a terminal and compact, parseable output when `AGENT=1` is set.
+- **Readable transcripts:** Writes Markdown with timestamps, speaker turns and recording metadata.
+- **Reusable results:** Recognizes recordings by their contents, so renaming a file still allows a cache hit.
+- **Recognition vocabulary:** Combines built-in engineering keyterms with names and terms supplied on the command line or in a file.
+- **Audio preparation:** Uses ffmpeg to merge channels and trim silence before upload when available.
+- **Spending history:** Lists past requests and retrieves their billed costs when credentials permit it.
+- **Agent reference:** Ships an embedded usage reference through `deepgram-transcribe skill`, with compact command output available through `AGENT=1`.
 
 # How It Works
 
-- You give it an audio file, and it checks the cache for a response to that exact audio.
-- On a cache hit the stored response is served immediately, with no upload, no waiting and no charge.
-- On a miss the audio is made smaller first: stereo channels are merged into one and long silences are trimmed, because Deepgram bills for how much audio is sent.
-- The audio is uploaded to Deepgram, which returns the words along with who spoke them and when.
-- The result is rendered as Markdown, to stdout or to the file named with `--output`.
-- Each request is recorded with its duration and cost, so spending can be reviewed later.
+- Give `deepgram-transcribe` a local recording. It reads the audio and looks for a cached response.
+- A cache hit returns the saved transcript without uploading the recording again.
+- Reusing a cached transcript preserves the original request's history and billed cost.
+- On a cache miss, it prepares the audio with ffmpeg when available, then sends the recording and recognition options to Deepgram.
+- It writes the transcript to stdout or the file selected with `--output`.
+- It saves the response and request details locally so you can reuse the transcript and inspect its cost later.
 
 # How it Really Works
 
-- Transcription posts the audio to Deepgram's pre-recorded REST endpoint (`POST /v1/listen`), asking for speaker diarization, smart formatting, utterance segmentation and punctuation. No intelligence add-ons such as summarisation or sentiment are requested.
-- Keyterms travel as `keyterm` query parameters on `nova-3` and `flux`, and as `keywords` on the older model families, which is the same distinction Deepgram's API draws.
-- Two SHA-256 keys index the cache: one over the raw audio bytes, one over the audio plus the request options. The first recognises the same audio under changed options, the second recognises an identical request.
-- A response and its job record are stored together as a single JSON envelope per key, under `$XDG_CACHE_HOME/deepgram-transcribe` or `~/.cache/deepgram-transcribe`.
-- Preprocessing shells out to `ffmpeg`, using `-ac 1` to downmix and the `silenceremove` filter to cut dead air, and is skipped entirely on a cache hit, so a repeat request touches neither ffmpeg nor the network.
-- What a request was actually billed comes from Deepgram's management API, is fetched concurrently when listing history, and is written back so the same request is never looked up twice.
-- Until that real charge arrives, cost is estimated from a published rate compiled into the binary, and a model with no published rate reports an unknown cost rather than a guess. The estimate ignores negotiated and volume pricing, and published rates change, so [Deepgram's pricing page](https://deepgram.com/pricing) is the authority and `job inspect` is what reports the real charge.
-- The transcript goes to stdout and everything else to stderr, so redirecting stdout captures the Markdown alone.
-
-# Prerequisites
-
-- [Deepgram API key](https://console.deepgram.com/) - Required to transcribe. Set `DEEPGRAM_API_KEY` in your environment or pass `--api-key`. Reading history and cached responses does not need one.
-- [ffmpeg](https://ffmpeg.org/download.html) - Version 4.4 or newer, optional but recommended. Without it, recordings are uploaded at full size and cost roughly twice as much. Run `deepgram-transcribe dependency install` and the tool will install it for you through your system package manager.
+- Recordings are matched by their original contents. A cache hit can reuse a response made with a different model, language, speaker configuration or vocabulary. Use `--force` when changed options require a fresh, billable request.
+- `--no-cache` skips both cache reads and writes, including spending-history storage. `--force` skips reads but saves the fresh result.
+- Cache and history default to `$XDG_CACHE_HOME/deepgram-transcribe`, or `~/.cache/deepgram-transcribe` when that variable is unset. `--cache-dir` selects another directory. `cache clear` deletes the cached responses and history there without prompting.
+- Audio preparation merges stereo channels to mono and trims silence. The prepared recording is uploaded only when its measured audio duration is strictly shorter. Equal, longer or unavailable durations select the original, including a mono conversion that leaves duration unchanged. Re-encoding can increase bytes even when duration decreases; progress reports both comparisons. `--no-preprocess` uploads the original recording.
+- Temporary prepared audio is written under `.tmp/audio_preprocess` in the working directory and removed after the run or when discarded. Missing or outdated ffmpeg or ffprobe produces a warning and the original audio is uploaded; a failure during encoding stops the command. An unreadable duration selects original audio with a warning.
+- A fresh transcription sends the audio, model, language and keyterms to Deepgram. Speaker labeling, punctuation, readable formatting and utterance segmentation are requested by default. `--no-diarize` disables speaker labeling.
+- A run estimates cost from the returned duration, channel count and rates included in the binary. Models without a known rate show an unknown estimate. `job list` and `job inspect` query Deepgram for unresolved billed charges when credentials are available, then save those charges locally. Pending charges appear as `not billed yet`; totals cover the jobs displayed.
+- The transcript, explicitly requested help and embedded skill go to stdout. Progress, warnings and errors go to stderr. A successful command exits with code `0`; a command error exits with code `1`.
+- `AGENT=1`, `true` or `yes` selects TSV listings, flat detail fields and compact diagnostics. Transcript Markdown and embedded skill bytes stay the same in both modes. Agent help begins with an instruction to read the embedded skill.
+- `dependency install` and `dependency update` invoke the host package manager and can change packages outside the tool's managed directory. The update command requests installation of declared packages; whether that upgrades an existing installation depends on the package manager.
 
 # Installation
 
@@ -42,129 +37,138 @@ Download the prebuilt binary for your platform from the [latest release](https:/
 
 ```bash
 # macOS (Apple Silicon)
-curl -sSL https://github.com/alexgorbatchev/deepgram-transcribe-cli/releases/latest/download/deepgram-transcribe_X.X.X_darwin_arm64.tar.gz | tar -xz -C ~/.local/bin
+mkdir -p ~/.local/bin
+curl -fSL https://github.com/alexgorbatchev/deepgram-transcribe-cli/releases/latest/download/deepgram-transcribe_X.X.X_darwin_arm64.tar.gz | tar -xz -C ~/.local/bin
+export PATH="$HOME/.local/bin:$PATH"
 ```
+
+# Setup
+
+- **[Deepgram account and API key](https://console.deepgram.com/):** Required for fresh transcriptions. Set `DEEPGRAM_API_KEY` or pass `--api-key`. Cached responses and local history remain readable without a key; billed-cost lookups require credentials with management API access.
+- **[ffmpeg and ffprobe](https://ffmpeg.org/download.html):** Version 4.4 or newer enables audio preparation and duration measurement. Check them with `deepgram-transcribe dependency list`. `dependency install` requests their shared ffmpeg package through your host package manager, using that manager's permissions and installation locations. Transcription uploads original audio when these tools are unavailable.
 
 # Quick Start
 
 ```bash
 export DEEPGRAM_API_KEY="your-deepgram-api-key"
 
-# Transcribe an audio file and save it as Markdown
+# Print a transcript
+deepgram-transcribe transcript create interview.m4a
+
+# Save the transcript; progress remains on stderr
 deepgram-transcribe transcript create interview.m4a > interview.md
 
-# Boost recognition of names that would otherwise be misheard
-deepgram-transcribe transcript create interview.m4a -t Envoy -t Gorbatchev -o interview.md
+# Request a fresh transcript with additional names
+deepgram-transcribe transcript create interview.m4a --force -t Envoy -t Gorbatchev -o interview.md
 
-# See what one request cost
+# Inspect one request or recent spending
 deepgram-transcribe job inspect interview.m4a
+deepgram-transcribe job list --limit 10
+```
 
-# See every request so far, and the running total
-deepgram-transcribe job list
+Sample Output (excerpt from transcript stdout):
+
+```markdown
+# Transcript: interview.m4a
+
+## Metadata
+
+| Property | Value |
+| :--- | :--- |
+| **Duration** | 00:05 |
+| **Model** | `nova-3` |
+| **Diarization** | `true` |
+
+---
+
+## Transcript
+
+### Speaker 0 (00:00 - 00:05)
+
+Hello world from Deepgram
 ```
 
 # Options & Flags
 
-Available on every command:
+Global flags:
 
 | Flag | Short | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `--api-key <key>` | | `$DEEPGRAM_API_KEY` | Deepgram API key |
-| `--cache-dir <path>` | | `~/.cache/deepgram-transcribe` | Directory for the local response cache |
-| `--version` | `-v` | `false` | Print the version and exit |
-| `--help` | `-h` | `false` | Print command line help |
+| `--api-key <key>` | | Empty; uses `DEEPGRAM_API_KEY` | Deepgram credentials |
+| `--cache-dir <path>` | | Empty; resolves to the XDG cache directory or `~/.cache/deepgram-transcribe` | Response cache and history directory |
+
+`deepgram-transcribe`:
+
+| Flag | Short | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--version` | `-v` | `false` | Print the bare version and exit; root command only |
+
+Every command:
+
+| Flag | Short | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--help` | `-h` | `false` | Print help for the selected command |
 
 `deepgram-transcribe transcript create <audio-file>`:
 
 | Flag | Short | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `--term <word>` | `-t` | none | Additional keyterm to boost recognition, such as a company or person name (repeatable or comma-separated) |
-| `--terms-file <path>` | | none | File of additional keyterms, one per line |
-| `--model <name>` | `-m` | `nova-3` | Transcription model to use |
+| `--term <word>` | `-t` | `[]` | Additional recognition keyterms; repeat or separate with commas |
+| `--terms-file <path>` | | Empty | Additional keyterms, one per line |
+| `--model <name>` | `-m` | `nova-3` | Deepgram transcription model |
 | `--language <code>` | `-l` | `en` | Language spoken in the audio |
-| `--output <path>` | `-o` | stdout | Write the transcript to this file instead of stdout |
-| `--force` | `-f` | `false` | Re-transcribe and be billed again, even on a cache hit |
-| `--no-diarize` | | `false` | Disable speaker diarization |
-| `--no-tech-terms` | | `false` | Disable the built-in engineering keyterms |
-| `--no-cache` | | `false` | Bypass the response cache, for both reads and writes |
-| `--no-preprocess` | | `false` | Disable ffmpeg preprocessing before upload |
-| `--no-mono` | | `false` | Disable stereo-to-mono downmixing |
-| `--no-trim-silence` | | `false` | Disable silence trimming |
-| `--silence-threshold <level>` | | `-30dB` | Noise threshold below which audio counts as silence |
-| `--silence-duration <seconds>` | | `2.0` | Minimum silence duration, in seconds, before it is trimmed |
+| `--output <path>` | `-o` | Empty; writes to stdout | Create or overwrite a transcript file |
+| `--force` | `-f` | `false` | Request a fresh transcription even when a cached result exists |
+| `--no-diarize` | | `false` | Disable speaker labeling |
+| `--no-tech-terms` | | `false` | Exclude built-in engineering keyterms |
+| `--no-cache` | | `false` | Skip cache reads and writes, including job history |
+| `--no-preprocess` | | `false` | Upload audio without either preparation step |
+| `--no-mono` | | `false` | Retain channels during preparation |
+| `--no-trim-silence` | | `false` | Retain silence during preparation |
+| `--silence-threshold <level>` | | `-30dB` | ffmpeg threshold below which audio counts as silence |
+| `--silence-duration <seconds>` | | `2.0` | Silence duration before trimming |
 
 `deepgram-transcribe job list`:
 
 | Flag | Short | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `--limit <count>` | | all | Show only this many of the most recent transcriptions |
+| `--limit <count>` | | `0` (all jobs) | Positive values limit the listing and its totals; zero or negative values show all |
+
+`deepgram-transcribe completion bash|zsh|fish|powershell`:
+
+| Flag | Short | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--no-descriptions` | | `false` | Generate shell completions without descriptions |
 
 # Commands
 
-```
-deepgram-transcribe
-├─ cache                               Manage the local response cache
-│  ├─ clear                            Delete all cached responses and job history
-│  ╰─ status                           Show the cache location and how many responses are stored
-├─ dependency                          Manage required external programs
-│  ├─ install                          Install missing or outdated programs
-│  ├─ list                             List required programs and their status
-│  ╰─ update                           Update required programs to their latest versions
-├─ job                                 Review past transcriptions and what they cost
-│  ├─ inspect <audio-file|request-id>  Show the details and cost of one past transcription
-│  ╰─ list                             List past transcriptions and total spending
-╰─ transcript                          Create transcripts from audio
-   ╰─ create <audio-file>              Transcribe an audio file to Markdown
-```
+| Command | Result or side effect |
+| :--- | :--- |
+| `transcript create <audio-file>` | Print or save a transcript |
+| `job list` | List stored requests and spending for displayed jobs |
+| `job inspect <audio-file\|request-id>` | Show one stored request and its cost |
+| `cache status` | Show the cache directory and recorded response count |
+| `cache clear` | Delete cached responses and history without prompting |
+| `dependency list` | Check ffmpeg and ffprobe versions and status |
+| `dependency install` | Request the shared ffmpeg package for missing or outdated tools |
+| `dependency update` | Request host-package-manager installation for declared programs |
+| `skill` | Print the embedded operational reference |
+| `help [command]` | Print help for a command path |
+| `completion bash\|zsh\|fish\|powershell` | Print a shell completion script |
 
-Supported audio formats are `.mp3`, `.m4a`, `.mp4`, `.wav`, `.flac`, `.ogg` and `.aac`.
-
-# Required Programs
-
-Transcribing needs nothing but the binary itself. Making recordings smaller before upload needs `ffmpeg`, and the tool manages that for you rather than leaving you to work out what is missing.
-
-```bash
-# What is needed, what is installed, and whether it is good enough
-deepgram-transcribe dependency list
-
-# Install anything missing or too old, through brew, apt, pacman, dnf or winget
-deepgram-transcribe dependency install
-
-# Move everything to its newest version
-deepgram-transcribe dependency update
-```
-
-Anything the tool installs itself goes into its own directory, under `$XDG_DATA_HOME/deepgram-transcribe/bin` or `~/.local/share/deepgram-transcribe/bin`, which is added to the path for its own runs only. Nothing outside that directory is touched. If `ffmpeg` is missing when you transcribe, the recording is uploaded at full size and the run says so rather than failing.
+The audio must be supported by Deepgram; common recording formats include MP3, M4A, MP4, WAV, FLAC, Ogg, AAC and Opus. Paths with spaces work when quoted.
 
 # Agent Mode
 
-Set `AGENT=1` to swap the polished output for a compact, parseable form: no rules, no borders, no padding. Listings become tab separated, details become flat `key: value` lines, and help screens become compact command summaries.
+Read the embedded reference before operating the CLI:
 
 ```bash
-AGENT=1 deepgram-transcribe job list
+AGENT=1 deepgram-transcribe skill
+AGENT=1 deepgram-transcribe job list --limit 10
 ```
 
-```
-date	file	duration	channels	model	cost	request_id
-2026-03-31	interview.m4a	10:00	1	nova-3	$0.043	req-actual-123
-transcriptions: 1
-total_duration: 10:00
-total_billed: $0.043
-```
-
-# Comparison With The Official Deepgram CLI
-
-The official [`deepgram/cli`](https://github.com/deepgram/cli) streams audio to Deepgram on every run. `deepgram-transcribe` is built instead around not paying for the same recording twice.
-
-| Capability | `deepgram-transcribe` | Official Deepgram CLI (`dg`) |
-| :--- | :--- | :--- |
-| **Response caching** | Built in. A repeat request is served from cache, costs nothing and returns immediately. | None. Every run calls the API and is billed. |
-| **Cache key** | Keyed on the audio content itself, so a cache hit survives changed request options. | None. The audio is uploaded every time. |
-| **Forcing a fresh run** | `-f / --force` when new keyterms or a different model are needed. | Not applicable, since it always re-transcribes. |
-| **Cheaper uploads** | Merges stereo to mono and cuts dead air with `ffmpeg` before uploading. | None. The file is uploaded as it is. |
-| **Spending history** | `job inspect` and `job list` track request IDs, duration and running spend. | None. Requires the management API or the web dashboard. |
-| **Output** | Markdown with a metadata table and speaker turns. | Raw JSON, VTT, SRT or plain text. |
+The reference covers all commands, generated shell completion commands, argument and flag contracts, environment variables, output formats, errors and side effects. It works offline without the source repository.
 
 # License
 
-MIT License (c) 2026 Alex Gorbatchev
+[MIT License](LICENSE) © 2026 Alex Gorbatchev
