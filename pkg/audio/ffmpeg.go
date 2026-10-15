@@ -63,24 +63,19 @@ func PreprocessAudio(ctx context.Context, inputPath string, opts PreprocessOptio
 		ext = ".m4a"
 	}
 
-	tmpDir := filepath.Join(".tmp", "audio_preprocess")
-	if err := os.MkdirAll(tmpDir, 0755); err != nil {
-		return "", noCleanup, fmt.Errorf("creating temp audio directory: %w", err)
-	}
-
-	tmpFile, err := os.CreateTemp(tmpDir, "transcribe-proc-*"+ext)
+	tmpFile, err := os.CreateTemp("", "transcribe-proc-*"+ext)
 	if err != nil {
 		return "", noCleanup, fmt.Errorf("creating temp audio file: %w", err)
 	}
 	// The file is only needed as a reserved name: ffmpeg writes the audio itself,
 	// so it has to be closed before ffmpeg is started.
 	outputPath := tmpFile.Name()
-	if err := tmpFile.Close(); err != nil {
-		return "", noCleanup, fmt.Errorf("closing temp audio file %q: %w", outputPath, err)
-	}
-
 	cleanup := func() {
-		_ = os.Remove(outputPath)
+		_ = os.Remove(outputPath) // Best-effort cleanup, including repeated calls.
+	}
+	if err := tmpFile.Close(); err != nil {
+		cleanup()
+		return "", noCleanup, fmt.Errorf("closing temp audio file %q: %w", outputPath, err)
 	}
 
 	args := BuildFFmpegArgs(inputPath, outputPath, opts)

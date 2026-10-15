@@ -32,9 +32,9 @@ func TestPreprocessExtensionlessAudio(t *testing.T) {
 
 func TestPreprocessRejectsBlockedTempDirectory(t *testing.T) {
 	t.Chdir(t.TempDir())
-	if err := os.WriteFile(".tmp", []byte("occupied"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
+	t.Setenv("TMP", os.Getenv("TMPDIR"))
+	t.Setenv("TEMP", os.Getenv("TMPDIR"))
 	path, cleanup, err := PreprocessAudio(t.Context(), "recording.wav", PreprocessOptions{
 		Mono: true,
 		Runner: func(context.Context, string, ...string) ([]byte, error) {
@@ -43,7 +43,7 @@ func TestPreprocessRejectsBlockedTempDirectory(t *testing.T) {
 		},
 	})
 	cleanup()
-	if path != "" || err == nil || !strings.Contains(err.Error(), "creating temp audio directory") {
+	if path != "" || err == nil || !strings.Contains(err.Error(), "creating temp audio file") {
 		t.Fatalf("got path %q, error %v", path, err)
 	}
 }
@@ -136,6 +136,10 @@ func TestPreprocessAudioWithFFmpeg(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	t.Setenv("PATH", t.TempDir())
+	tmpDir := t.TempDir()
+	t.Setenv("TMPDIR", tmpDir)
+	t.Setenv("TMP", tmpDir)
+	t.Setenv("TEMP", tmpDir)
 
 	inputFile := filepath.Join(dir, "test-input.wav")
 	if err := os.WriteFile(inputFile, []byte("source"), 0o600); err != nil {
@@ -158,6 +162,12 @@ func TestPreprocessAudioWithFFmpeg(t *testing.T) {
 		t.Fatalf("PreprocessAudio failed: %v", err)
 	}
 	defer cleanup()
+	if filepath.Dir(processedPath) != os.TempDir() {
+		t.Errorf("prepared file %q is outside OS temp directory %q", processedPath, os.TempDir())
+	}
+	if _, err := os.Stat(".tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("preprocessing touched working-directory .tmp: %v", err)
+	}
 
 	if processedPath == inputFile {
 		t.Errorf("expected new temp processed file path, got same %q", processedPath)
