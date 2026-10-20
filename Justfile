@@ -1,4 +1,4 @@
-set positional-arguments := true
+set positional-arguments
 
 binary_name := "deepgram-transcribe"
 
@@ -6,43 +6,47 @@ default: build
 
 # Build the binary into bin/
 build:
-	mkdir -p bin
-	go build -o bin/{{binary_name}} ./cmd/{{binary_name}}
+    mkdir -p bin
+    go build -o bin/{{ binary_name }} ./cmd/{{ binary_name }}
 
 # Run the CLI in human mode
 # Usage: just run transcript create "/path/with spaces/file.m4a"
 run *args: build
-	./bin/{{binary_name}} "$@"
+    ./bin/{{ binary_name }} "$@"
 
 # Run the CLI in agent mode, which trades formatting for fewer tokens
 # Usage: just run-ai job list
 run-ai *args: build
-	AGENT=1 ./bin/{{binary_name}} "$@"
+    AGENT=1 ./bin/{{ binary_name }} "$@"
 
 # Run unit tests
 test:
-	go test -race ./...
+    go test -race ./...
 
 # Update Go module dependencies to their newest versions
 update-deps:
-	go get -u ./...
-	go mod tidy
+    go get -u ./...
+    go mod tidy
 
 # Check formatting and run static analysis
 lint:
-	gofmt -l .
-	go vet ./...
-	golangci-lint run
+    gofmt -l .
+    go vet ./...
+    golangci-lint run
 
 # Run the full pre-commit gate
 check: lint test
-	go mod tidy -diff
+    go mod tidy -diff
 
 # Run unit tests and report coverage
 coverage:
-	go test -coverprofile=coverage.out ./...
-	go tool cover -func=coverage.out
+    go test -coverprofile=coverage.out ./...
+    go tool cover -func=coverage.out
 
 # Remove build artifacts
 clean:
-	rm -rf bin/ coverage.out coverage.html
+    rm -rf bin/ coverage.out coverage.html
+
+# Download project dependencies for local development
+setup:
+    go mod download
