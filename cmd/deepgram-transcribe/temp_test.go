@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -53,7 +54,15 @@ func TestTranscriptTemporaryAudioLifecycle(t *testing.T) {
 					t.Errorf("prepared audio removed before upload finished: %v", err)
 				}
 				if stage == "cancel upload" {
+					// Hold the response until the client abandons the request, as a
+					// slow transcription would. Returning at once races an empty 200
+					// against the client noticing the cancellation. The server only
+					// notices a dropped connection once the body has been read.
+					if _, err := io.Copy(io.Discard, r.Body); err != nil {
+						t.Errorf("reading upload: %v", err)
+					}
 					cancel()
+					<-r.Context().Done()
 					return
 				}
 				if stage == "API error" {
