@@ -7,7 +7,7 @@
 - **Recognition vocabulary:** Combines built-in engineering keyterms with names and terms supplied on the command line or in a file.
 - **Audio preparation:** Uses ffmpeg to merge channels and trim silence before upload when available.
 - **Spending history:** Lists past requests and retrieves their billed costs when credentials permit it.
-- **Agent reference:** Ships an embedded usage reference through `deepgram-transcribe skill`, with compact command output available through `AGENT=1`.
+- **Agent skill:** Publishes an agent skill that `deepgram-transcribe skill` shows how to install, with compact command output available through `AGENT=1`.
 
 # How It Works
 
@@ -27,8 +27,8 @@
 - Temporary prepared audio is written in the operating system's temporary directory and removed when discarded or after success, errors, or cancellation with Ctrl-C/SIGTERM. Forced termination such as SIGKILL cannot run cleanup. Missing or outdated ffmpeg or ffprobe produces a warning and the original audio is uploaded; a failure during encoding stops the command. An unreadable duration selects original audio with a warning.
 - A fresh transcription sends the audio, model, language and keyterms to Deepgram. Speaker labeling, punctuation, readable formatting and utterance segmentation are requested by default. `--no-diarize` disables speaker labeling.
 - A run estimates cost from the returned duration, channel count and rates included in the binary. Models without a known rate show an unknown estimate. `job list` and `job inspect` query Deepgram for unresolved billed charges when credentials are available, then save those charges locally. Pending charges appear as `not billed yet`; totals cover the jobs displayed.
-- The transcript, explicitly requested help and embedded skill go to stdout. Progress, warnings and errors go to stderr. A successful command exits with code `0`; a command error exits with code `1`.
-- `AGENT=1`, `true` or `yes` selects TSV listings, flat detail fields and compact diagnostics. Transcript Markdown and embedded skill bytes stay the same in both modes. Agent help begins with an instruction to read the embedded skill.
+- The transcript, explicitly requested help and `skill` instructions go to stdout. Progress, warnings and errors go to stderr. A successful command exits with code `0`; a command error exits with code `1`.
+- `AGENT=1`, `true` or `yes` selects TSV listings, flat detail fields and compact diagnostics. Transcript Markdown and `skill` output stay the same in both modes. Agent help begins with an instruction to run `AGENT=1 deepgram-transcribe skill`.
 - `dependency install` and `dependency update` invoke the host package manager and can change packages outside the tool's managed directory. The update command requests installation of declared packages; whether that upgrades an existing installation depends on the package manager.
 
 # Installation
@@ -152,7 +152,7 @@ Every command:
 | `dependency list` | Check ffmpeg and ffprobe versions and status |
 | `dependency install` | Request the shared ffmpeg package for missing or outdated tools |
 | `dependency update` | Request host-package-manager installation for declared programs |
-| `skill` | Print the embedded operational reference |
+| `skill` | Print the Skills CLI install command and the skill's URL |
 | `help [command]` | Print help for a command path |
 | `completion bash\|zsh\|fish\|powershell` | Print a shell completion script |
 
@@ -160,14 +160,14 @@ The audio must be supported by Deepgram; common recording formats include MP3, M
 
 # Agent Mode
 
-Read the embedded reference before operating the CLI:
+Install the agent skill with the [Skills CLI](https://github.com/vercel-labs/skills) before operating the CLI. `deepgram-transcribe skill` prints the same command and the skill's location:
 
 ```bash
-AGENT=1 deepgram-transcribe skill
+npx skills add alexgorbatchev/deepgram-transcribe-cli --skill deepgram-transcribe
 AGENT=1 deepgram-transcribe job list --limit 10
 ```
 
-The reference covers all commands, generated shell completion commands, argument and flag contracts, environment variables, output formats, errors and side effects. It works offline without the source repository.
+The skill covers all commands, generated shell completion commands, argument and flag contracts, environment variables, output formats, errors and side effects. It is published at [`skills/deepgram-transcribe/SKILL.md`](skills/deepgram-transcribe/SKILL.md).
 
 # License
 

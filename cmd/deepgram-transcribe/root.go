@@ -1,9 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"os"
 
-	cobrahelptree "github.com/alexgorbatchev/cobra-help-tree/v2"
+	cobrahelptree "github.com/alexgorbatchev/cobra-help-tree/v3"
 	"github.com/alexgorbatchev/godeps"
 	"github.com/spf13/cobra"
 
@@ -23,6 +24,11 @@ const (
 	// apart.
 	rootCommandName = "deepgram-transcribe"
 )
+
+// skillSource is where the agent skill is published: skills/deepgram-transcribe/SKILL.md
+// on the repository's default branch. cobra-help-tree turns it into the `skill`
+// command and the alert that opens every agent help screen.
+var skillSource = cobrahelptree.SkillSource{Repository: "alexgorbatchev/deepgram-transcribe-cli", Branch: "main"}
 
 // globalOptions holds the settings that every subcommand shares. They are bound
 // to persistent flags on the root command so that a transcript saved to a custom
@@ -86,7 +92,7 @@ func (g *globalOptions) newClient() *deepgram.Client {
 
 // newRootCmd assembles the command tree. Subjects sit at the top level and their
 // verbs nest underneath: transcript create, job list, job inspect, cache status,
-// cache clear.
+// cache clear. The top-level skill command comes from setTreeHelp.
 func newRootCmd(g *globalOptions) *cobra.Command {
 	root := &cobra.Command{
 		Use:   rootCommandName,
@@ -123,7 +129,6 @@ fresh transcription, which may be billed again. Job commands report request cost
 		newCacheCmd(g),
 		newDependencyCmd(g),
 		newJobCmd(g),
-		newSkillCmd(),
 		newTranscriptCmd(g),
 	)
 
@@ -133,22 +138,26 @@ fresh transcription, which may be billed again. Job commands report request cost
 }
 
 // setTreeHelp renders every help and usage screen as an aligned command tree,
-// trimmed to the terminal width, and as compact key-value text when AGENT=1.
+// trimmed to the terminal width, and as compact key-value text when AGENT=1. It
+// also adds the skill command, which prints how to install the agent skill, and
+// opens every agent help screen with an alert pointing at it.
 //
 // Generated commands are hidden because the tree exists to be read: cobra's
 // completion command arrives with four shell children, so keeping it would cost
-// five lines above the first command this CLI actually defines. Agent mode still
-// lists it, since there the contract is a full description of the interface.
-//
-// The error is dropped deliberately. SetupWithOptions fails only on a nil
-// command or invalid options, and both are fixed here: root was just built, and
-// the options are a literal holding one bool.
+// five lines above the first command this CLI actually defines. The skill command
+// counts as generated, since agents are sent to it by the alert. Agent mode still
+// lists both, since there the contract is a full description of the interface.
 func setTreeHelp(root *cobra.Command) {
-	_ = cobrahelptree.SetupWithOptions(root, cobrahelptree.HelpOptions{
+	err := cobrahelptree.SetupWithOptions(root, cobrahelptree.HelpOptions{
 		Catalog: helpCatalog(),
+		Skill:   skillSource,
 		Tree:    cobrahelptree.TreeOptions{HideGeneratedCommands: true},
-		Agent:   cobrahelptree.AgentOptions{RequireSkill: true},
 	})
+	if err != nil {
+		// The command is the freshly built root and the options are static, so a
+		// failure is a programming error.
+		panic(fmt.Sprintf("configuring help: %v", err))
+	}
 }
 
 // helpCatalog describes what each positional argument means.

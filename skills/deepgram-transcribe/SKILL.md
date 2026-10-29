@@ -4,13 +4,14 @@ description: Use when operating deepgram-transcribe to transcribe audio, inspect
 author: alexgorbatchev
 metadata:
   created_on: 2026-10-01 21:03
-  last_modified: 2026-10-14 18:55
+  last_modified: 2026-10-29 12:50
   status: current
 ---
 
 ## Workflows
 
-Read this reference with `AGENT=1 deepgram-transcribe skill`.
+Run `AGENT=1 deepgram-transcribe skill` to print the Skills CLI command that installs
+this skill and the URL where it is published.
 
 ```bash
 export DEEPGRAM_API_KEY="your-deepgram-api-key"
@@ -31,8 +32,8 @@ Use `--no-preprocess` to upload the original audio. Use `--no-mono` or
 
 - Transcription outputs Markdown with a metadata table and timestamped speaker turns, identically in both modes. `--output` writes that result to a file, creates parent directories and overwrites an existing file.
 - Progress, confirmations, warnings and errors go to stderr. Explicit help and `skill` go to stdout. Syntax-error usage goes to stderr. Success exits 0; a command error exits 1.
-- `AGENT=1`, `true` or `yes` selects compact output; matching ignores case and surrounding whitespace. Other values select human output. Listings use TSV, details use `key: value` lines, and diagnostics use `INFO:`, `WARN:`, `OK:`, `ERR:` or `HINT:`. Human output uses bordered tables, aligned fields and bracketed tags. Agent help begins with the skill-reading alert and retains full descriptions.
-- `COLUMNS` accepts a positive integer for human help/output width. Otherwise terminal width is detected; human help and output fall back to 100 columns when unavailable. Agent help is untruncated.
+- `AGENT=1`, `true` or `yes` selects compact output; matching ignores case and surrounding whitespace. Other values select human output. Listings use TSV, details use `key: value` lines, and diagnostics use `INFO:`, `WARN:`, `OK:`, `ERR:` or `HINT:`. Human output uses bordered tables, aligned fields and bracketed tags. Agent help begins with the skill-reading alert, retains full descriptions and lists every command. The human help tree omits the `skill` and `completion` commands, which still run.
+- `COLUMNS` accepts a positive integer for human help/output width. Otherwise terminal width is detected. When neither is available, human help is not clipped and human command output uses 100 columns. Agent help is untruncated.
 - `DEEPGRAM_API_KEY` supplies credentials when `--api-key` is empty. A nonempty flag takes precedence. A cache hit works without credentials; a fresh request needs credentials. History commands query the management API for pending charges when credentials are available and save resolved charges locally.
 - An empty `--cache-dir` resolves to `$XDG_CACHE_HOME/deepgram-transcribe`, then `~/.cache/deepgram-transcribe`; if the home directory is unavailable, it uses `.cache/deepgram-transcribe` relative to the working directory.
 - `$XDG_DATA_HOME/deepgram-transcribe/bin` (or `~/.local/share/deepgram-transcribe/bin`) is prepended to this process's `PATH` for managed-program discovery. The `dependency install` and `dependency update` commands use the host package manager and can change packages outside that directory.
@@ -62,20 +63,32 @@ Display root help, invoke a subject command, or print the bare version with `--v
 | :--- | :--- | :--- | :--- | :--- |
 | `--api-key` | `` | `string` | `` | Credentials; effective default is `DEEPGRAM_API_KEY` |
 | `--cache-dir` | `` | `string` | `` | Cache directory; effective default follows XDG/home resolution above |
-| `--help` | `h` | `bool` | `false` | Print requested help |
-| `--version` | `v` | `bool` | `false` | Print the bare version and exit |
+| `--help` | `-h` | `bool` | `false` | Print requested help |
+| `--version` | `-v` | `bool` | `false` | Print the bare version and exit |
 
 ### `deepgram-transcribe skill`
 
 Invocation: `deepgram-transcribe skill`
 
-Print this entire embedded Markdown reference verbatim, including frontmatter.
+Print the Skills CLI install command and the published location of this skill,
+byte-identical in both modes:
+
+```text
+Install the deepgram-transcribe skill using the Skills CLI:
+
+  npx skills add alexgorbatchev/deepgram-transcribe-cli --skill deepgram-transcribe
+
+Skill:
+
+  https://github.com/alexgorbatchev/deepgram-transcribe-cli/tree/main/skills/deepgram-transcribe
+```
+
 Accepts zero positional arguments and has no command-specific flags. Runs offline
 without credentials or repository files. Output-write failures fail the command.
 
 | Flag | Short | Type | Parser default | Behavior |
 | :--- | :--- | :--- | :--- | :--- |
-| `--help` | `h` | `bool` | `false` | Print command help |
+| `--help` | `-h` | `bool` | `false` | Print command help |
 
 ### `deepgram-transcribe transcript`
 
@@ -85,7 +98,7 @@ Display the transcript command subtree.
 
 | Flag | Short | Type | Parser default | Behavior |
 | :--- | :--- | :--- | :--- | :--- |
-| `--help` | `h` | `bool` | `false` | Print subject help |
+| `--help` | `-h` | `bool` | `false` | Print subject help |
 
 ### `deepgram-transcribe transcript create`
 
@@ -98,13 +111,13 @@ Deepgram determines whether the actual audio is supported.
 
 | Flag | Short | Type | Parser default | Behavior |
 | :--- | :--- | :--- | :--- | :--- |
-| `--help` | `h` | `bool` | `false` | Print command help |
-| `--term` | `t` | `stringArray` | `[]` | Repeat or use comma-separated keyterms; whitespace and empty terms are removed |
+| `--help` | `-h` | `bool` | `false` | Print command help |
+| `--term` | `-t` | `stringArray` | `[]` | Repeat or use comma-separated keyterms; whitespace and empty terms are removed |
 | `--terms-file` | `` | `string` | `` | Additional keyterms, one per line; blank and comment lines are skipped |
-| `--model` | `m` | `string` | `nova-3` | Model name passed to Deepgram; accepted names are determined by the API |
-| `--language` | `l` | `string` | `en` | Language identifier passed to Deepgram; accepted identifiers are determined by the API |
-| `--output` | `o` | `string` | `` | Empty means stdout; a path creates/overwrites a Markdown file |
-| `--force` | `f` | `bool` | `false` | Bypass cache reads and request a billable transcription |
+| `--model` | `-m` | `string` | `nova-3` | Model name passed to Deepgram; accepted names are determined by the API |
+| `--language` | `-l` | `string` | `en` | Language identifier passed to Deepgram; accepted identifiers are determined by the API |
+| `--output` | `-o` | `string` | `` | Empty means stdout; a path creates/overwrites a Markdown file |
+| `--force` | `-f` | `bool` | `false` | Bypass cache reads and request a billable transcription |
 | `--no-diarize` | `` | `bool` | `false` | Disable speaker labeling in the API request |
 | `--no-tech-terms` | `` | `bool` | `false` | Exclude built-in engineering keyterms |
 | `--no-cache` | `` | `bool` | `false` | Bypass cache reads and writes, including job history |
@@ -122,7 +135,7 @@ Display the history command subtree.
 
 | Flag | Short | Type | Parser default | Behavior |
 | :--- | :--- | :--- | :--- | :--- |
-| `--help` | `h` | `bool` | `false` | Print subject help |
+| `--help` | `-h` | `bool` | `false` | Print subject help |
 
 ### `deepgram-transcribe job list`
 
@@ -134,7 +147,7 @@ Unresolved charges show `not billed yet`; an empty history is reported on stderr
 
 | Flag | Short | Type | Parser default | Behavior |
 | :--- | :--- | :--- | :--- | :--- |
-| `--help` | `h` | `bool` | `false` | Print command help |
+| `--help` | `-h` | `bool` | `false` | Print command help |
 | `--limit` | `` | `int` | `0` | Positive values limit recent jobs; zero and negative values list all |
 
 ### `deepgram-transcribe job inspect`
@@ -151,7 +164,7 @@ with a history hint.
 
 | Flag | Short | Type | Parser default | Behavior |
 | :--- | :--- | :--- | :--- | :--- |
-| `--help` | `h` | `bool` | `false` | Print command help |
+| `--help` | `-h` | `bool` | `false` | Print command help |
 
 ### `deepgram-transcribe cache`
 
@@ -161,7 +174,7 @@ Display the cache command subtree.
 
 | Flag | Short | Type | Parser default | Behavior |
 | :--- | :--- | :--- | :--- | :--- |
-| `--help` | `h` | `bool` | `false` | Print subject help |
+| `--help` | `-h` | `bool` | `false` | Print subject help |
 
 ### `deepgram-transcribe cache status`
 
@@ -172,7 +185,7 @@ of recorded cached responses.
 
 | Flag | Short | Type | Parser default | Behavior |
 | :--- | :--- | :--- | :--- | :--- |
-| `--help` | `h` | `bool` | `false` | Print command help |
+| `--help` | `-h` | `bool` | `false` | Print command help |
 
 ### `deepgram-transcribe cache clear`
 
@@ -183,7 +196,7 @@ without prompting; report the number removed on stderr. Other files are retained
 
 | Flag | Short | Type | Parser default | Behavior |
 | :--- | :--- | :--- | :--- | :--- |
-| `--help` | `h` | `bool` | `false` | Print command help |
+| `--help` | `-h` | `bool` | `false` | Print command help |
 
 ### `deepgram-transcribe dependency`
 
@@ -193,7 +206,7 @@ Display the external-program command subtree.
 
 | Flag | Short | Type | Parser default | Behavior |
 | :--- | :--- | :--- | :--- | :--- |
-| `--help` | `h` | `bool` | `false` | Print subject help |
+| `--help` | `-h` | `bool` | `false` | Print subject help |
 
 ### `deepgram-transcribe dependency list`
 
@@ -205,7 +218,7 @@ shown as status information; it does not cause a command error.
 
 | Flag | Short | Type | Parser default | Behavior |
 | :--- | :--- | :--- | :--- | :--- |
-| `--help` | `h` | `bool` | `false` | Print command help |
+| `--help` | `-h` | `bool` | `false` | Print command help |
 
 ### `deepgram-transcribe dependency install`
 
@@ -218,7 +231,7 @@ Failure returns an error and suggests manual installation.
 
 | Flag | Short | Type | Parser default | Behavior |
 | :--- | :--- | :--- | :--- | :--- |
-| `--help` | `h` | `bool` | `false` | Print command help |
+| `--help` | `-h` | `bool` | `false` | Print command help |
 
 ### `deepgram-transcribe dependency update`
 
@@ -231,7 +244,7 @@ Failure returns an error and suggests manual updating.
 
 | Flag | Short | Type | Parser default | Behavior |
 | :--- | :--- | :--- | :--- | :--- |
-| `--help` | `h` | `bool` | `false` | Print command help |
+| `--help` | `-h` | `bool` | `false` | Print command help |
 
 ### `deepgram-transcribe help`
 
@@ -242,7 +255,7 @@ that path; an unknown target prints an unknown-topic diagnostic and root help.
 
 | Flag | Short | Type | Parser default | Behavior |
 | :--- | :--- | :--- | :--- | :--- |
-| `--help` | `h` | `bool` | `false` | Print help-command help |
+| `--help` | `-h` | `bool` | `false` | Print help-command help |
 
 ### `deepgram-transcribe completion`
 
@@ -252,7 +265,7 @@ Display shell completion choices. Accepts zero positional arguments.
 
 | Flag | Short | Type | Parser default | Behavior |
 | :--- | :--- | :--- | :--- | :--- |
-| `--help` | `h` | `bool` | `false` | Print completion help |
+| `--help` | `-h` | `bool` | `false` | Print completion help |
 
 ### `deepgram-transcribe completion bash`
 
@@ -263,7 +276,7 @@ loading it requires bash-completion. Save or source the script to activate it.
 
 | Flag | Short | Type | Parser default | Behavior |
 | :--- | :--- | :--- | :--- | :--- |
-| `--help` | `h` | `bool` | `false` | Print shell help |
+| `--help` | `-h` | `bool` | `false` | Print shell help |
 | `--no-descriptions` | `` | `bool` | `false` | Generate completions without descriptions |
 
 ### `deepgram-transcribe completion zsh`
@@ -275,7 +288,7 @@ completions with `compinit`, then source the script or save it on your `fpath`.
 
 | Flag | Short | Type | Parser default | Behavior |
 | :--- | :--- | :--- | :--- | :--- |
-| `--help` | `h` | `bool` | `false` | Print shell help |
+| `--help` | `-h` | `bool` | `false` | Print shell help |
 | `--no-descriptions` | `` | `bool` | `false` | Generate completions without descriptions |
 
 ### `deepgram-transcribe completion fish`
@@ -287,7 +300,7 @@ source it or save it in Fish's completions directory.
 
 | Flag | Short | Type | Parser default | Behavior |
 | :--- | :--- | :--- | :--- | :--- |
-| `--help` | `h` | `bool` | `false` | Print shell help |
+| `--help` | `-h` | `bool` | `false` | Print shell help |
 | `--no-descriptions` | `` | `bool` | `false` | Generate completions without descriptions |
 
 ### `deepgram-transcribe completion powershell`
@@ -299,5 +312,5 @@ pipe it to `Out-String | Invoke-Expression` or add it to your PowerShell profile
 
 | Flag | Short | Type | Parser default | Behavior |
 | :--- | :--- | :--- | :--- | :--- |
-| `--help` | `h` | `bool` | `false` | Print shell help |
+| `--help` | `-h` | `bool` | `false` | Print shell help |
 | `--no-descriptions` | `` | `bool` | `false` | Generate completions without descriptions |
