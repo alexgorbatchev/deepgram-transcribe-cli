@@ -393,9 +393,8 @@ func TestHelpCatalogKeysMatchRealCommands(t *testing.T) {
 	}
 }
 
-// TestHelpFitsTheTerminalWidth guards the whole help screen, not just the parts
-// the renderer clips. A line wider than the terminal wraps, and a wrapped line
-// destroys the description column the tree exists to provide.
+// TestHelpFitsTheTerminalWidth guards the whole help screen. Only one word wider
+// than the terminal may overflow, because help text is never cut.
 //
 // Count every line, including the footer and generated-command descriptions.
 // These screens contain ASCII and single-cell box-drawing glyphs only.
@@ -419,7 +418,7 @@ func TestHelpFitsTheTerminalWidth(t *testing.T) {
 				}
 
 				for _, line := range strings.Split(out.String(), "\n") {
-					if width := utf8.RuneCountInString(line); width > columns {
+					if width := utf8.RuneCountInString(line); width > columns && len(strings.Fields(strings.Trim(line, " │├╰─"))) > 1 {
 						t.Errorf("line is %d cells wide, over the %d column budget: %q", width, columns, line)
 					}
 				}

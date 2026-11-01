@@ -4,7 +4,7 @@ description: Use when operating deepgram-transcribe to transcribe audio, inspect
 author: alexgorbatchev
 metadata:
   created_on: 2026-10-01 21:03
-  last_modified: 2026-10-29 12:50
+  last_modified: 2026-11-01 12:30
   status: current
 ---
 
@@ -33,7 +33,7 @@ Use `--no-preprocess` to upload the original audio. Use `--no-mono` or
 - Transcription outputs Markdown with a metadata table and timestamped speaker turns, identically in both modes. `--output` writes that result to a file, creates parent directories and overwrites an existing file.
 - Progress, confirmations, warnings and errors go to stderr. Explicit help and `skill` go to stdout. Syntax-error usage goes to stderr. Success exits 0; a command error exits 1.
 - `AGENT=1`, `true` or `yes` selects compact output; matching ignores case and surrounding whitespace. Other values select human output. Listings use TSV, details use `key: value` lines, and diagnostics use `INFO:`, `WARN:`, `OK:`, `ERR:` or `HINT:`. Human output uses bordered tables, aligned fields and bracketed tags. Agent help begins with the skill-reading alert, retains full descriptions and lists every command. The human help tree omits the `skill` and `completion` commands, which still run.
-- `COLUMNS` accepts a positive integer for human help/output width. Otherwise terminal width is detected. When neither is available, human help is not clipped and human command output uses 100 columns. Agent help is untruncated.
+- `COLUMNS` accepts a positive integer for human help/output width. Otherwise terminal width is detected. Human help wraps to that width and is never truncated. When neither is available, human help stays unwrapped and human command output uses 100 columns. Agent help is always complete.
 - `DEEPGRAM_API_KEY` supplies credentials when `--api-key` is empty. A nonempty flag takes precedence. A cache hit works without credentials; a fresh request needs credentials. History commands query the management API for pending charges when credentials are available and save resolved charges locally.
 - An empty `--cache-dir` resolves to `$XDG_CACHE_HOME/deepgram-transcribe`, then `~/.cache/deepgram-transcribe`; if the home directory is unavailable, it uses `.cache/deepgram-transcribe` relative to the working directory.
 - `$XDG_DATA_HOME/deepgram-transcribe/bin` (or `~/.local/share/deepgram-transcribe/bin`) is prepended to this process's `PATH` for managed-program discovery. The `dependency install` and `dependency update` commands use the host package manager and can change packages outside that directory.

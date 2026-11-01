@@ -18,7 +18,7 @@ import (
 	"strings"
 	"unicode"
 
-	cobrahelptree "github.com/alexgorbatchev/cobra-help-tree/v3"
+	cobrahelptree "github.com/alexgorbatchev/cobra-help-tree/v4"
 	"github.com/olekukonko/tablewriter"
 )
 

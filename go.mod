@@ -3,7 +3,7 @@ module github.com/alexgorbatchev/deepgram-transcribe-cli
 go 1.26.5
 
 require (
-	github.com/alexgorbatchev/cobra-help-tree/v3 v3.0.0
+	github.com/alexgorbatchev/cobra-help-tree/v4 v4.0.0
 	github.com/alexgorbatchev/godeps v1.0.0
 	github.com/olekukonko/tablewriter v1.1.5
 	github.com/spf13/cobra v1.10.2
