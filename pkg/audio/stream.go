@@ -16,7 +16,8 @@ import (
 // diagnostics.
 type StreamRunner func(ctx context.Context, stdin io.Reader, stdout io.Writer, name string, args ...string) error
 
-// DefaultStreamRunner runs the program with os/exec.
+// DefaultStreamRunner runs the program with os/exec. A program stopped
+// because ctx ended reports ctx's error, so cancellation stays recognizable.
 func DefaultStreamRunner(ctx context.Context, stdin io.Reader, stdout io.Writer, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	var stderr bytes.Buffer
@@ -24,6 +25,9 @@ func DefaultStreamRunner(ctx context.Context, stdin io.Reader, stdout io.Writer,
 	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("%w: %w", ctxErr, err)
+		}
 		if diagnostics := godeps.SanitizeStderr(stderr.String()); diagnostics != "" {
 			return fmt.Errorf("%w: %s", err, diagnostics)
 		}

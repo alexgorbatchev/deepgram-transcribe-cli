@@ -2,6 +2,7 @@ package audio
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // helperProcessEnv makes the test binary act as the program
@@ -19,6 +21,10 @@ func TestMain(m *testing.M) {
 	switch os.Getenv(helperProcessEnv) {
 	case "":
 		os.Exit(m.Run())
+	case "wait":
+		// Runs until killed.
+		time.Sleep(time.Minute)
+		os.Exit(0)
 	case "echo":
 		// Upper-cases stdin to stdout.
 		data, _ := io.ReadAll(os.Stdin)
@@ -45,6 +51,19 @@ func TestDefaultStreamRunnerReportsDiagnostics(t *testing.T) {
 	t.Setenv(helperProcessEnv, "fail")
 	err := DefaultStreamRunner(t.Context(), nil, nil, os.Args[0])
 	if err == nil || !strings.Contains(err.Error(), "decoder exploded") || !strings.Contains(err.Error(), "exit status 3") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestDefaultStreamRunnerReportsCancellation(t *testing.T) {
+	t.Setenv(helperProcessEnv, "wait")
+	ctx, cancel := context.WithCancel(t.Context())
+	var out bytes.Buffer
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+	if err := DefaultStreamRunner(ctx, nil, &out, os.Args[0]); !errors.Is(err, context.Canceled) {
 		t.Fatalf("got %v", err)
 	}
 }
