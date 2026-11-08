@@ -30,14 +30,13 @@ func TestTranscriptTemporaryAudioLifecycle(t *testing.T) {
 				}
 				target := args[len(args)-1]
 				if name == "ffprobe" {
-					duration := "10"
-					if target == prepared {
-						if stage == "cancel probe" {
-							cancel()
-							return nil, ctx.Err()
-						}
-						duration = "5"
+					// Trimmed audio is measured from its decoded samples, so the
+					// only probe is of the source.
+					if stage == "cancel probe" {
+						cancel()
+						return nil, ctx.Err()
 					}
+					duration := "10"
 					return []byte(`{"streams":[{"duration":"` + duration + `","sample_rate":"1000","channels":1}]}`), nil
 				}
 				joined := strings.Join(args, " ")
@@ -99,8 +98,9 @@ func TestTranscriptTemporaryAudioLifecycle(t *testing.T) {
 			if strings.HasPrefix(stage, "cancel ") && !errors.Is(err, context.Canceled) {
 				t.Errorf("expected cancellation, got %v", err)
 			}
-			if stage == "missing key" {
-				// The key is checked before any audio is prepared.
+			if stage == "missing key" || stage == "cancel probe" {
+				// The key is checked, and the source probed, before any audio
+				// is prepared.
 				if prepared != "" {
 					t.Errorf("audio was prepared for a run that cannot upload it: %s", prepared)
 				}

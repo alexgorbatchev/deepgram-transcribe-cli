@@ -496,6 +496,11 @@ func (r *transcriptRun) prepareUpload() (func(), error) {
 		Padding:          r.opts.trimPadding,
 		Runner:           r.global.depsRunner,
 	})
+	// Decoded audio was counted sample by sample, which beats ffprobe's
+	// estimate for containers without a duration index.
+	if prepared.SourceDuration > 0 {
+		r.timeline.SourceDuration = prepared.SourceDuration
+	}
 	if errors.Is(err, audio.ErrNoSpeech) {
 		r.out.Warn("No speech was detected; uploading original audio.")
 		return noCleanup, nil
@@ -508,22 +513,28 @@ func (r *transcriptRun) prepareUpload() (func(), error) {
 		return noCleanup, nil
 	}
 
-	processed, err := audio.Probe(ctx, prepared.Path, r.global.depsRunner)
-	if err != nil {
-		cleanup()
-		if err := ctx.Err(); err != nil {
-			return noCleanup, err
+	original, processed := prepared.SourceDuration, prepared.Duration
+	if original == 0 {
+		// A plain downmix is not decoded here, so ffprobe measures both files.
+		original = source.Duration
+		measured, err := audio.Probe(ctx, prepared.Path, r.global.depsRunner)
+		if err != nil {
+			cleanup()
+			if err := ctx.Err(); err != nil {
+				return noCleanup, err
+			}
+			r.out.Warn("Could not compare audio durations; uploading original audio.")
+			r.out.Detail("%v", err)
+			return noCleanup, nil
 		}
-		r.out.Warn("Could not compare audio durations; uploading original audio.")
-		r.out.Detail("%v", err)
-		return noCleanup, nil
+		processed = measured.Duration
 	}
-	if processed.Duration >= source.Duration {
+	if processed >= original {
 		cleanup()
-		r.out.Status("Processed audio is %.3f s, original is %.3f s; uploading original audio because processing did not shorten it.", processed.Duration, source.Duration)
+		r.out.Status("Processed audio is %.3f s, original is %.3f s; uploading original audio because processing did not shorten it.", processed, original)
 		return noCleanup, nil
 	}
-	r.out.Status("Audio duration is %.3f s, down from %.3f s.", processed.Duration, source.Duration)
+	r.out.Status("Audio duration is %.3f s, down from %.3f s.", processed, original)
 	r.out.Detail("kept_ranges: %d", len(prepared.Kept))
 	r.uploadPath = prepared.Path
 	r.timeline.Kept = prepared.Kept

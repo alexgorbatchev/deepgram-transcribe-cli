@@ -49,6 +49,13 @@ type Prepared struct {
 	// Kept lists the ranges of the input, in seconds, that Path contains, end
 	// to end. It is empty when nothing was cut.
 	Kept []timeline.Range
+	// SourceDuration is the input's length in seconds, counted from its
+	// decoded samples, and Duration is Path's length counted the same way.
+	// Both are exact, unlike the estimate ffprobe reports for containers
+	// without a duration index. Both are zero when the input was not decoded,
+	// which is the case for a downmix without trimming.
+	SourceDuration float64
+	Duration       float64
 }
 
 // PreprocessAudio prepares audio for upload: it merges channels when Mono is
@@ -136,16 +143,23 @@ func (p *preparation) run() (Prepared, error) {
 		return Prepared{}, fmt.Errorf("measuring decoded audio: %w", err)
 	}
 	totalSamples := info.Size() / frameBytes
+	measured := samplesToSeconds(totalSamples, p.source.SampleRate)
+	unchanged.SourceDuration = measured
 
 	spans := toSampleSpans(ranges, p.opts.Padding, p.source.SampleRate, totalSamples)
 	if len(spans) == 0 {
-		return Prepared{}, ErrNoSpeech
+		return unchanged, ErrNoSpeech
 	}
 	if len(spans) == 1 && spans[0].start == 0 && spans[0].end == totalSamples {
-		if p.opts.Mono {
-			return p.downmix()
+		if !p.opts.Mono {
+			return unchanged, nil
 		}
-		return unchanged, nil
+		downmixed, err := p.downmix()
+		if err != nil {
+			return Prepared{}, err
+		}
+		downmixed.SourceDuration, downmixed.Duration = measured, measured
+		return downmixed, nil
 	}
 
 	cut := filepath.Join(p.workDir, "cut.pcm")
@@ -163,7 +177,20 @@ func (p *preparation) run() (Prepared, error) {
 		return Prepared{}, err
 	}
 
-	return Prepared{Path: p.output, Kept: spansToRanges(spans, p.source.SampleRate)}, nil
+	var keptSamples int64
+	for _, s := range spans {
+		keptSamples += s.end - s.start
+	}
+	return Prepared{
+		Path:           p.output,
+		Kept:           spansToRanges(spans, p.source.SampleRate),
+		SourceDuration: measured,
+		Duration:       samplesToSeconds(keptSamples, p.source.SampleRate),
+	}, nil
+}
+
+func samplesToSeconds(samples int64, sampleRate int) float64 {
+	return float64(samples) / float64(sampleRate)
 }
 
 // downmix merges every channel into one without cutting anything.

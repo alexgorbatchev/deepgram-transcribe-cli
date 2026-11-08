@@ -30,6 +30,7 @@ type fakeMedia struct {
 	sourceDuration    string // "N/A" makes the probe fail
 	processedDuration string
 	silences          string // what silencedetect prints
+	decodedDuration   string // decoded length of the source; empty means sourceDuration
 	probeErr          error
 	prepared          string // the last prepared file ffmpeg wrote
 }
@@ -58,7 +59,11 @@ func (f *fakeMedia) run(_ context.Context, name string, args ...string) ([]byte,
 	case strings.Contains(joined, "silencedetect="):
 		return []byte(f.silences), nil
 	case strings.Contains(joined, "pcm_s16le"):
-		seconds, err := strconv.ParseFloat(f.sourceDuration, 64)
+		decoded := f.decodedDuration
+		if decoded == "" {
+			decoded = f.sourceDuration
+		}
+		seconds, err := strconv.ParseFloat(decoded, 64)
 		if err != nil {
 			f.t.Fatalf("decoding without a source duration: %v", err)
 		}
@@ -159,6 +164,28 @@ func TestPrepareUploadRecordsKeptRanges(t *testing.T) {
 	want := timeline.Timeline{SourceDuration: 60, Kept: []timeline.Range{{Start: 0, End: 5}, {Start: 40, End: 60}}}
 	if !reflect.DeepEqual(run.timeline, want) || run.uploadPath == run.audioPath {
 		t.Fatalf("timeline %+v upload %s; %s", run.timeline, run.uploadPath, stderr)
+	}
+}
+
+// TestPrepareUploadMeasuresDecodedAudio covers a container whose duration
+// ffprobe can only estimate, here 12 s for 30 s of audio. Trimming keeps 15 s:
+// against the estimate that would look longer and the full recording would be
+// uploaded, and the transcript would report a 12 s recording. The decoded
+// sample count decides both instead, and the prepared file is not probed.
+func TestPrepareUploadMeasuresDecodedAudio(t *testing.T) {
+	media := &fakeMedia{t: t, sourceDuration: "12", decodedDuration: "30", processedDuration: "N/A", silences: "lavfi.silence_start=5\nlavfi.silence_end=20\n"}
+	run, _, stderr := newPrepareRun(t, media, &transcriptOptions{trimMode: audio.TrimSilence, noMono: true})
+	cleanup, err := run.prepareUpload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	want := timeline.Timeline{SourceDuration: 30, Kept: []timeline.Range{{Start: 0, End: 5}, {Start: 20, End: 30}}}
+	if run.uploadPath == run.audioPath || !reflect.DeepEqual(run.timeline, want) {
+		t.Fatalf("upload %s timeline %+v:\n%s", run.uploadPath, run.timeline, stderr)
+	}
+	if !strings.Contains(stderr.String(), "Audio duration is 15.000 s, down from 30.000 s.") {
+		t.Fatalf("durations not taken from the decoded audio:\n%s", stderr)
 	}
 }
 

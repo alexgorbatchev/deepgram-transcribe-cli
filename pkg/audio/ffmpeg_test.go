@@ -156,6 +156,9 @@ func TestPreprocessAudioCutsSilenceAtExactSamples(t *testing.T) {
 		if !reflect.DeepEqual(got.Kept, wantKept) {
 			t.Fatalf("kept %v, want %v", got.Kept, wantKept)
 		}
+		if got.SourceDuration != 10 || got.Duration != 5.5 {
+			t.Fatalf("durations %v and %v, want 10 and 5.5 from the decoded samples", got.SourceDuration, got.Duration)
+		}
 		uploaded, err := os.ReadFile(got.Path)
 		if err != nil {
 			t.Fatal(err)
@@ -203,6 +206,9 @@ func TestPreprocessAudioKeepsTheTailBeyondAShortDurationEstimate(t *testing.T) {
 	}
 	if want := []timeline.Range{{Start: 0, End: 2}, {Start: 4, End: 10}}; !reflect.DeepEqual(got.Kept, want) {
 		t.Fatalf("kept %v, want %v", got.Kept, want)
+	}
+	if got.SourceDuration != 10 || got.Duration != 8 {
+		t.Fatalf("durations %v and %v, want the decoded 10 and 8, not the 9.2 s estimate", got.SourceDuration, got.Duration)
 	}
 	uploaded, err := os.ReadFile(got.Path)
 	if err != nil {
@@ -270,7 +276,7 @@ func TestPreprocessAudioReportsNoSpeech(t *testing.T) {
 	source := StreamInfo{Duration: 2, SampleRate: 1000, Channels: 1}
 	got, cleanup, err := PreprocessAudio(t.Context(), "noise.wav", source, PreprocessOptions{Trim: TrimVAD, VAD: defaultVAD, Runner: fake.run})
 	cleanup()
-	if !errors.Is(err, ErrNoSpeech) || got.Path != "" {
+	if !errors.Is(err, ErrNoSpeech) || got.Path != "noise.wav" || got.SourceDuration != 2 || got.Kept != nil {
 		t.Fatalf("got %+v, error %v", got, err)
 	}
 	assertRemoved(t, filepath.Dir(fake.calls[0][len(fake.calls[0])-1]))
@@ -286,6 +292,9 @@ func TestPreprocessAudioKeepsUncutAudio(t *testing.T) {
 		}
 		if (got.Path == "talk.wav") == mono {
 			t.Fatalf("mono %t: unexpected upload %s", mono, got.Path)
+		}
+		if got.SourceDuration != 3 || (mono && got.Duration != 3) {
+			t.Fatalf("mono %t: durations %v and %v, want the decoded 3 s", mono, got.SourceDuration, got.Duration)
 		}
 		workDir := filepath.Dir(fake.calls[1][len(fake.calls[1])-1])
 		cleanup()
