@@ -346,3 +346,46 @@ func TestPreprocessingExplainsAnUnreadableProgramVersion(t *testing.T) {
 		})
 	}
 }
+
+// TestContentCacheHitDescribesTheCachedRequest covers a cache hit on audio
+// content alone: the cached transcript was made by another model, in another
+// language and without diarization, so the document must describe that
+// request rather than the one asked for now.
+func TestContentCacheHitDescribesTheCachedRequest(t *testing.T) {
+	server, requests := countingServer(t, trimmedResponseJSON)
+	cacheDir := t.TempDir()
+	audioPath := writeAudio(t, t.TempDir(), "session.wav", "sixty seconds of audio in Spanish")
+
+	miss := runTrimmedTranscript(t, cacheDir, server.URL, audioPath, "--format", "json", "--no-diarize", "-m", "whisper", "-l", "es", "--no-tech-terms")
+	hit := runTrimmedTranscript(t, cacheDir, server.URL, audioPath, "--format", "json")
+
+	if requests.Load() != 1 {
+		t.Fatalf("Deepgram was asked %d times, want once", requests.Load())
+	}
+	if strings.Replace(miss, `"cache_hit": false`, `"cache_hit": true`, 1) != hit {
+		t.Fatalf("content cache hit changed the document:\nmiss: %s\nhit:  %s", miss, hit)
+	}
+
+	var doc struct {
+		Model           string   `json:"model"`
+		Language        string   `json:"language"`
+		Diarized        bool     `json:"diarized"`
+		CostEstimateUSD *float64 `json:"cost_estimate_usd"`
+		Words           []struct {
+			Speaker *int `json:"speaker"`
+		} `json:"words"`
+	}
+	if err := json.Unmarshal([]byte(hit), &doc); err != nil {
+		t.Fatal(err)
+	}
+	// Whisper without keyterms: 25 s at the Whisper list rate.
+	wantCost, _ := deepgram.EstimateCostUSD(25, 1, deepgram.Options{Model: "whisper"})
+	if doc.Model != "whisper" || doc.Language != "es" || doc.Diarized || doc.CostEstimateUSD == nil || *doc.CostEstimateUSD != wantCost {
+		t.Fatalf("document describes the wrong request: %+v", doc)
+	}
+	for i, w := range doc.Words {
+		if w.Speaker != nil {
+			t.Errorf("word %d has invented speaker %d", i, *w.Speaker)
+		}
+	}
+}

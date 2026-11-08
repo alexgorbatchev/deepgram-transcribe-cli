@@ -210,6 +210,11 @@ type transcriptRun struct {
 	sourceKey  string
 	optionsKey string
 
+	// answered is the request that produced the response: the one asked for,
+	// or for a cache hit on audio content alone, the one recorded with the
+	// cached response. Everything describing the transcript comes from it.
+	answered deepgram.Options
+
 	client          *deepgram.Client
 	uploadPath      string
 	response        *deepgram.PreRecordedResponse
@@ -310,6 +315,7 @@ func (r *transcriptRun) buildRequest() error {
 
 	r.sourceKey = deepgram.SourceAudioKey(r.sourceBytes)
 	r.optionsKey = deepgram.CacheKey(r.sourceBytes, r.request)
+	r.answered = r.request
 
 	return nil
 }
@@ -355,6 +361,19 @@ func (r *transcriptRun) serveCachedResponse() {
 	r.out.Detail("cache_key: %s", envelope.Record.SHA256)
 
 	r.serveEnvelope(envelope)
+	r.answered = recordedRequest(r.request, envelope.Record)
+}
+
+// recordedRequest returns the request a job record describes. Formatting
+// options are not recorded and are the same for every request this command
+// makes, so they are taken from current.
+func recordedRequest(current deepgram.Options, record deepgram.JobRecord) deepgram.Options {
+	recorded := current
+	recorded.Model = record.Model
+	recorded.Language = record.Language
+	recorded.DiarizeModel = record.DiarizeModel
+	recorded.Terms = record.Terms
+	return recorded
 }
 
 // rejectUntimed reports whether a cached response must not be served because
@@ -594,8 +613,8 @@ func (r *transcriptRun) recordJob() {
 		}
 	}
 
-	r.cost = deepgram.CalculateCostWithOptions(duration, channels, r.request)
-	if cost, priced := deepgram.EstimateCostUSD(duration, channels, r.request); priced {
+	r.cost = deepgram.CalculateCostWithOptions(duration, channels, r.answered)
+	if cost, priced := deepgram.EstimateCostUSD(duration, channels, r.answered); priced {
 		r.costUSD = &cost
 	}
 
@@ -618,6 +637,7 @@ func (r *transcriptRun) recordJob() {
 		DurationSeconds: duration,
 		Channels:        channels,
 		Model:           r.opts.model,
+		Language:        r.request.Language,
 		DiarizeModel:    r.request.DiarizeModel,
 		Preprocessed:    r.opts.wantsMono() || r.opts.wantsTrim(),
 		Terms:           r.keyTerms,
@@ -658,7 +678,7 @@ func (r *transcriptRun) writeTranscript() error {
 	if r.cost == deepgram.CostUnknown {
 		r.out.Success(
 			"Saved the transcript to %s. Deepgram does not publish a rate for the %s model, so what it cost will only be known once `job inspect` can read it from your bill.",
-			r.opts.outputFile, r.request.EffectiveModel(),
+			r.opts.outputFile, r.answered.EffectiveModel(),
 		)
 		return nil
 	}
@@ -676,9 +696,9 @@ func (r *transcriptRun) renderTranscript() ([]byte, error) {
 		return transcriptjson.Format(mapped, transcriptjson.Meta{
 			Filename: filepath.Base(r.audioPath),
 			FileSize: r.audioSize,
-			Model:    r.request.EffectiveModel(),
-			Language: r.request.Language,
-			Diarized: r.request.Diarized(),
+			Model:    r.answered.EffectiveModel(),
+			Language: r.answered.Language,
+			Diarized: r.answered.Diarized(),
 			CacheHit: r.servedFromCache,
 			CostUSD:  r.costUSD,
 			Timeline: r.timeline,
@@ -688,9 +708,9 @@ func (r *transcriptRun) renderTranscript() ([]byte, error) {
 	return []byte(markdown.Format(&mapped, markdown.MetaInfo{
 		Filename:       filepath.Base(r.audioPath),
 		FileSize:       formatFileSize(r.audioSize),
-		Model:          r.opts.model,
-		Diarized:       r.request.Diarized(),
-		KeyTerms:       r.keyTerms,
+		Model:          r.answered.EffectiveModel(),
+		Diarized:       r.answered.Diarized(),
+		KeyTerms:       r.answered.Keyterms(),
 		Timestamp:      time.Now(),
 		SourceDuration: r.timeline.SourceDuration,
 	})), nil
