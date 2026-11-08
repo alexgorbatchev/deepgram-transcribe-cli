@@ -15,7 +15,6 @@ import (
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/audio"
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/deepgram"
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/terms"
-	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/timeline"
 )
 
 // trimmedResponseJSON is what Deepgram returns for audio that kept 0-5 s and
@@ -222,12 +221,6 @@ var trimmedPreparation = audio.PreprocessOptions{
 	Trim: audio.TrimSilence, SilenceThreshold: audio.DefaultSilenceThreshold, SilenceDuration: audio.DefaultSilenceDuration,
 }
 
-// defaultPreparation is how a `transcript create` without flags prepares audio.
-var defaultPreparation = audio.PreprocessOptions{
-	Mono: true, Trim: audio.TrimVAD, Padding: audio.DefaultTrimPadding,
-	VAD: audio.VADOptions{Threshold: audio.DefaultVADThreshold, MinSpeech: audio.DefaultVADMinSpeech, MinSilence: audio.DefaultVADMinSilence},
-}
-
 // defaultRequestKey is the cache key of a `transcript create` request with
 // default recognition options for audioBytes prepared as preparation says.
 func defaultRequestKey(audioBytes string, preparation audio.PreprocessOptions) string {
@@ -290,29 +283,37 @@ func TestJSONTranscribesAgainWhenTheCachedTimelineIsUnknown(t *testing.T) {
 	}
 }
 
-func TestMissingKeyFailsBeforeAnyAudioIsPrepared(t *testing.T) {
-	cacheDir := t.TempDir()
-	audioBytes := "audio that needs a fresh request"
-	if err := deepgram.SaveCachedResponse(cacheDir, defaultRequestKey(audioBytes, defaultPreparation), &deepgram.PreRecordedResponse{}, timeline.Timeline{}); err != nil {
-		t.Fatal(err)
-	}
+// TestMissingKeyFailsOnlyWhenAnUploadIsNeeded covers a fresh request without
+// an API key: a recording with speech fails before anything is uploaded,
+// while a recording without speech needs no upload and gets its empty
+// transcript.
+func TestMissingKeyFailsOnlyWhenAnUploadIsNeeded(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		args []string
+		name, silences string
+		args           []string
+		fails          bool
 	}{
-		{"cache miss", []string{"--no-cache"}},
-		{"forced", []string{"--force"}},
+		{"cache miss", "lavfi.silence_start=5\nlavfi.silence_end=40\n", []string{"--no-cache"}, true},
+		{"forced", "lavfi.silence_start=5\nlavfi.silence_end=40\n", []string{"--force"}, true},
+		{"no speech", "lavfi.silence_start=0\n", []string{"--format", "json"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
-				t.Fatalf("ran %s %v before checking the API key", name, args)
-				return nil, nil
+			server, requests := countingServer(t, trimmedResponseJSON)
+			audioPath := writeAudio(t, t.TempDir(), "session.wav", "audio that needs a fresh request")
+			root, out, errOut := newTestCLIWithMedia(t, t.TempDir(), server.URL, &fakeMedia{t: t, sourceDuration: "60", silences: tc.silences})
+			root.SetArgs(append([]string{"transcript", "create", audioPath, "--trim-mode", "silence"}, tc.args...))
+			err := root.Execute()
+			if requests.Load() != 0 {
+				t.Fatalf("Deepgram was asked %d times without a key", requests.Load())
 			}
-			audioPath := writeAudio(t, t.TempDir(), "session.wav", audioBytes)
-			root, _, _ := newTestCLIWithRunner(t, cacheDir, "", runner)
-			root.SetArgs(append([]string{"transcript", "create", audioPath}, tc.args...))
-			if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "no Deepgram API key") {
-				t.Fatalf("got %v", err)
+			if tc.fails {
+				if err == nil || !strings.Contains(err.Error(), "no Deepgram API key") {
+					t.Fatalf("got %v", err)
+				}
+				return
+			}
+			if err != nil || !strings.Contains(out.String(), `"transcribed_duration": 0`) {
+				t.Fatalf("error %v, output:\n%s\n%s", err, out, errOut)
 			}
 		})
 	}

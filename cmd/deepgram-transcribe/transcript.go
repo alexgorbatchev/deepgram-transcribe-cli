@@ -73,9 +73,10 @@ func (o *transcriptOptions) diarizeModel() string {
 	return deepgram.DiarizeModelLatest
 }
 
-// wantsMono reports whether audio with several channels should be merged into
-// one. Deepgram bills the processed duration of every channel, so merging
-// stereo halves the bill.
+// wantsMono reports whether audio that is cut should also be merged into one
+// channel. Deepgram transcribes and bills a request without multichannel as
+// one channel either way, so merging only makes the upload smaller and never
+// justifies re-encoding a recording that is not cut.
 func (o *transcriptOptions) wantsMono() bool { return !o.noPreprocess && !o.noMono }
 
 // effectiveTrimMode returns how audio is trimmed before upload, which is not
@@ -194,7 +195,7 @@ at all: the transcript is empty and nothing is billed.`,
 	flags.BoolVar(&opts.noTechTerms, "no-tech-terms", false, "Disable the built-in engineering keyterms")
 	flags.BoolVar(&opts.noCache, "no-cache", false, "Bypass the response cache, for both reads and writes")
 	flags.BoolVar(&opts.noPreprocess, "no-preprocess", false, "Disable ffmpeg preprocessing before upload")
-	flags.BoolVar(&opts.noMono, "no-mono", false, "Disable stereo-to-mono downmixing")
+	flags.BoolVar(&opts.noMono, "no-mono", false, "Keep every channel of trimmed audio instead of merging them into one")
 	flags.StringVar(&opts.format, "format", formatMarkdown, "Transcript format: markdown or json")
 	flags.StringVar(&opts.trimModeFlag, "trim-mode", string(audio.TrimVAD), "How to find the audio worth uploading: vad (speech model), silence (volume threshold) or none")
 	flags.Float64Var(&opts.trimPadding, "trim-padding", audio.DefaultTrimPadding, "Seconds of audio kept on each side of what trimming keeps")
@@ -264,12 +265,6 @@ func runTranscriptCreate(cmd *cobra.Command, g *globalOptions, opts *transcriptO
 
 	run.serveCachedResponse()
 
-	// A run that has to ask Deepgram fails on a missing key before any audio
-	// is prepared, which can take minutes for a long recording.
-	if err := run.connect(); err != nil {
-		return err
-	}
-
 	cleanup, err := run.prepareUpload()
 	if err != nil {
 		return err
@@ -279,6 +274,11 @@ func runTranscriptCreate(cmd *cobra.Command, g *globalOptions, opts *transcriptO
 	if run.noSpeech {
 		run.answerWithoutSpeech()
 	} else {
+		// The key is needed only for an upload, so a recording without
+		// speech is answered without one.
+		if err := run.connect(); err != nil {
+			return err
+		}
 		if err := run.fetchTranscript(); err != nil {
 			return err
 		}
@@ -478,8 +478,8 @@ func (r *transcriptRun) preprocessingReady() bool {
 	return true
 }
 
-// prepareUpload selects prepared audio only when it is shorter than the source.
-// It is skipped when a cached response already answered the request, because
+// prepareUpload trims the recording, and uploads the prepared audio when
+// trimming cut something, which makes it shorter. It is skipped when a cached response already answered the request, because
 // nothing will be uploaded.
 //
 // The returned function removes the temporary audio and is safe to call even
@@ -490,7 +490,7 @@ func (r *transcriptRun) prepareUpload() (func(), error) {
 	if r.response != nil {
 		return noCleanup, nil
 	}
-	if !r.opts.wantsMono() && !r.opts.wantsTrim() {
+	if !r.opts.wantsTrim() {
 		return noCleanup, r.countUploadChannels()
 	}
 
@@ -513,12 +513,6 @@ func (r *transcriptRun) prepareUpload() (func(), error) {
 	}
 	r.timeline.SourceDuration = source.Duration
 	r.uploadChannels = source.Channels
-	if source.Duration == 0 && !r.opts.wantsTrim() {
-		// Only trimming decodes the recording, and a mono merge without it
-		// cannot be shown to be shorter without a duration to compare.
-		r.out.Warn("Could not measure the recording's duration; uploading original audio.")
-		return noCleanup, nil
-	}
 
 	options := r.opts.preprocessOptions()
 	options.Runner = r.global.depsRunner
@@ -540,41 +534,13 @@ func (r *transcriptRun) prepareUpload() (func(), error) {
 		return noCleanup, fmt.Errorf("preparing audio for upload: %w", err)
 	}
 	if prepared.Path == r.audioPath {
-		if r.opts.wantsTrim() {
-			r.out.Status("Nothing worth cutting was found; uploading original audio.")
-		} else {
-			r.out.Status("The recording has one channel already; uploading original audio.")
-		}
+		r.out.Status("Nothing worth cutting was found; uploading original audio.")
 		return noCleanup, nil
 	}
 
-	original, processed := prepared.SourceDuration, prepared.Duration
-	if original == 0 {
-		// A plain downmix is not decoded here, so ffprobe measures both files.
-		original = source.Duration
-		measured, err := audio.Probe(ctx, prepared.Path, r.global.depsRunner)
-		if err == nil && measured.Duration == 0 {
-			err = errors.New("ffprobe reports no duration for the prepared audio")
-		}
-		if err != nil {
-			cleanup()
-			if err := ctx.Err(); err != nil {
-				return noCleanup, err
-			}
-			r.out.Warn("Could not compare audio durations; uploading original audio.")
-			r.out.Detail("%v", err)
-			return noCleanup, nil
-		}
-		processed = measured.Duration
-	}
-	// Deepgram bills the processed duration of every channel.
-	if processed*float64(prepared.Channels) >= original*float64(source.Channels) {
-		cleanup()
-		r.out.Status("Processed audio is %.3f s in %s, original is %.3f s in %s; uploading original audio because processing did not lower the billed duration.",
-			processed, formatChannels(prepared.Channels), original, formatChannels(source.Channels))
-		return noCleanup, nil
-	}
-	r.out.Status("Audio is %.3f s in %s, down from %.3f s in %s.", processed, formatChannels(prepared.Channels), original, formatChannels(source.Channels))
+	// Prepared audio is always shorter: a recording kept whole is uploaded
+	// as it is. Both durations are counted from decoded samples.
+	r.out.Status("Audio duration is %.3f s, down from %.3f s.", prepared.Duration, prepared.SourceDuration)
 	r.out.Detail("kept_ranges: %d", len(prepared.Kept))
 	r.uploadPath = prepared.Path
 	r.uploadChannels = prepared.Channels
@@ -587,10 +553,10 @@ func (r *transcriptRun) prepareUpload() (func(), error) {
 	return cleanup, nil
 }
 
-// countUploadChannels reads the original recording's channel count for the
-// cost estimate when nothing is prepared: Deepgram bills every channel, and
-// the channel count in its response describes the transcript, not the upload.
-// Without a usable ffprobe the count stays unknown and Deepgram's stands in.
+// countUploadChannels reads the original recording's channel count when
+// nothing is prepared, for the cost estimate of a response that does not
+// report how many channels Deepgram processed. Without a usable ffprobe the
+// count stays unknown.
 func (r *transcriptRun) countUploadChannels() error {
 	ctx := r.cmd.Context()
 	source, err := audio.Probe(ctx, r.audioPath, r.global.depsRunner)
@@ -683,12 +649,12 @@ func (r *transcriptRun) uploadBytes() ([]byte, error) {
 func (r *transcriptRun) recordJob() {
 	duration := r.response.Metadata.Duration
 
-	// Deepgram bills the processed duration of every channel of the upload.
-	// Without ffprobe the upload's channels are unknown, so Deepgram's own
-	// count stands in, then one channel for responses that predate it.
-	channels := r.uploadChannels
+	// Deepgram bills the duration of the channels it reports processing. A
+	// response without that count falls back to the upload's channels, then
+	// to one.
+	channels := r.response.Metadata.Channels
 	if channels < 1 {
-		channels = max(r.response.Metadata.Channels, 1)
+		channels = max(r.uploadChannels, 1)
 	}
 
 	r.cost = deepgram.CalculateCostWithOptions(duration, channels, r.answered)
@@ -810,12 +776,4 @@ func formatTermsSummary(termList []string) string {
 	}
 
 	return strings.Join(sorted, ", ")
-}
-
-// formatChannels names a channel count, such as "1 channel" or "2 channels".
-func formatChannels(count int) string {
-	if count == 1 {
-		return "1 channel"
-	}
-	return fmt.Sprintf("%d channels", count)
 }

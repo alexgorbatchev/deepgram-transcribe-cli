@@ -107,9 +107,8 @@ func TestTranscriptTemporaryAudioLifecycle(t *testing.T) {
 			if strings.HasPrefix(stage, "cancel ") && !errors.Is(err, context.Canceled) {
 				t.Errorf("expected cancellation, got %v", err)
 			}
-			if stage == "missing key" || stage == "cancel probe" {
-				// The key is checked, and the source probed, before any audio
-				// is prepared.
+			if stage == "cancel probe" {
+				// The source is probed before any audio is prepared.
 				if prepared != "" {
 					t.Errorf("audio was prepared for a run that cannot upload it: %s", prepared)
 				}

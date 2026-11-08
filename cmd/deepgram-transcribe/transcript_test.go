@@ -109,11 +109,14 @@ func newPrepareRun(t *testing.T, media *fakeMedia, opts *transcriptOptions) (*tr
 	return run, out, stderr
 }
 
-func monoOnly() *transcriptOptions { return &transcriptOptions{trimMode: audio.TrimNone} }
+// cutSilence trims silence without merging channels.
+func cutSilence() *transcriptOptions {
+	return &transcriptOptions{trimMode: audio.TrimSilence, noMono: true}
+}
 
 func TestPrepareUploadReportsLargerAudio(t *testing.T) {
-	media := &fakeMedia{t: t, sourceDuration: "10", processedDuration: "5", channels: 2}
-	run, out, stderr := newPrepareRun(t, media, monoOnly())
+	media := &fakeMedia{t: t, sourceDuration: "60", silences: "lavfi.silence_start=5\nlavfi.silence_end=40\n"}
+	run, out, stderr := newPrepareRun(t, media, cutSilence())
 	cleanup, err := run.prepareUpload()
 	if err != nil {
 		t.Fatal(err)
@@ -122,57 +125,25 @@ func TestPrepareUploadReportsLargerAudio(t *testing.T) {
 	if !strings.Contains(stderr.String(), "up from 6 B") || strings.Contains(stderr.String(), "down from 6 B") || out.Len() != 0 {
 		t.Fatalf("incorrect size reporting: %s", stderr)
 	}
-	if run.uploadPath == run.audioPath || run.timeline.Trimmed() || run.timeline.SourceDuration != 10 {
+	if run.uploadPath == run.audioPath || !run.timeline.Trimmed() || run.timeline.SourceDuration != 60 {
 		t.Fatalf("prepared upload was not selected: %s %+v", run.uploadPath, run.timeline)
 	}
 }
 
-func TestPrepareUploadRequiresShorterDuration(t *testing.T) {
+func TestPrepareUploadKeepsOriginalWhenTheRecordingCannotBeProbed(t *testing.T) {
 	for _, mode := range []string{"0", "1"} {
-		for _, tc := range []struct {
-			name, source, processed string
-			probeErr                error
-			shorter                 bool
-			want                    string
-		}{
-			{name: "shorter", source: "10", processed: "5", shorter: true},
-			// One channel of the same length halves the billed duration.
-			{name: "equal", source: "10", processed: "10", shorter: true},
-			{name: "billed longer", source: "10", processed: "20", want: "did not lower the billed duration"},
-			{name: "unknown", source: "10", processed: "N/A", want: "Could not compare audio durations"},
-			{name: "original unknown", source: "N/A", processed: "5", want: "Could not measure the recording"},
-			{name: "probe failed", source: "10", processed: "5", probeErr: errors.New("duration probe failed"), want: "Could not measure the recording"},
-		} {
-			t.Run(mode+"/"+tc.name, func(t *testing.T) {
-				t.Setenv("AGENT", mode)
-				media := &fakeMedia{t: t, sourceDuration: tc.source, processedDuration: tc.processed, probeErr: tc.probeErr, channels: 2}
-				run, out, stderr := newPrepareRun(t, media, monoOnly())
-				t.Setenv("AGENT", mode)
-				run.out = cliout.New(out, stderr)
-				cleanup, err := run.prepareUpload()
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer cleanup()
-				if (run.uploadPath != run.audioPath) != tc.shorter {
-					t.Fatalf("wrong upload selection: %s; %s", run.uploadPath, stderr)
-				}
-				if out.Len() != 0 {
-					t.Fatalf("diagnostic leaked to stdout: %s", out)
-				}
-				if tc.shorter {
-					return
-				}
-				if media.prepared != "" {
-					if _, err := os.Stat(media.prepared); !os.IsNotExist(err) {
-						t.Fatalf("discarded audio retained: %v", err)
-					}
-				}
-				if !strings.Contains(stderr.String(), "original audio") || !strings.Contains(stderr.String(), tc.want) {
-					t.Fatalf("missing fallback explanation %q: %s", tc.want, stderr)
-				}
-			})
-		}
+		t.Run(mode, func(t *testing.T) {
+			media := &fakeMedia{t: t, sourceDuration: "60", silences: "lavfi.silence_start=5\n", probeErr: errors.New("probe failed")}
+			run, out, stderr := newPrepareRun(t, media, cutSilence())
+			t.Setenv("AGENT", mode)
+			run.out = cliout.New(out, stderr)
+			cleanup, err := run.prepareUpload()
+			cleanup()
+			if err != nil || run.uploadPath != run.audioPath || media.prepared != "" || out.Len() != 0 ||
+				!strings.Contains(stderr.String(), "Could not measure the recording; uploading original audio.") {
+				t.Fatalf("error %v upload %s prepared %q: %s", err, run.uploadPath, media.prepared, stderr)
+			}
+		})
 	}
 }
 
@@ -207,7 +178,7 @@ func TestPrepareUploadMeasuresDecodedAudio(t *testing.T) {
 	if run.uploadPath == run.audioPath || !reflect.DeepEqual(run.timeline, want) {
 		t.Fatalf("upload %s timeline %+v:\n%s", run.uploadPath, run.timeline, stderr)
 	}
-	if !strings.Contains(stderr.String(), "Audio is 15.000 s in 1 channel, down from 30.000 s in 1 channel.") {
+	if !strings.Contains(stderr.String(), "Audio duration is 15.000 s, down from 30.000 s.") {
 		t.Fatalf("durations not taken from the decoded audio:\n%s", stderr)
 	}
 }
@@ -272,7 +243,7 @@ func TestPrepareUploadWithoutFFprobe(t *testing.T) {
 	root, out, stderr := newTestCLIWithRunner(t, t.TempDir(), "", runner)
 	root.SetContext(t.Context())
 	audioPath := writeAudio(t, t.TempDir(), "recording.opus", "source")
-	run := &transcriptRun{cmd: root, out: cliout.New(out, stderr), global: &globalOptions{depsRunner: runner}, opts: monoOnly(), audioPath: audioPath}
+	run := &transcriptRun{cmd: root, out: cliout.New(out, stderr), global: &globalOptions{depsRunner: runner}, opts: cutSilence(), audioPath: audioPath}
 	if err := run.loadSource(); err != nil {
 		t.Fatal(err)
 	}
@@ -668,27 +639,38 @@ func TestJobRecordSaysWhetherPreparedAudioWasUploaded(t *testing.T) {
 	}
 }
 
-// TestCostEstimateCountsEveryUploadedChannel covers a stereo recording
-// uploaded as it is, because trimming found nothing to cut and merging is
-// off, or because preprocessing is off: Deepgram bills the processed duration
-// of both channels, although its response reports one, and a cache hit
-// estimates the same.
-func TestCostEstimateCountsEveryUploadedChannel(t *testing.T) {
+// transcribeResponseWithoutChannelsJSON is a response that does not say how
+// many channels Deepgram processed.
+const transcribeResponseWithoutChannelsJSON = `{
+	"metadata": {"request_id": "mock-req-002", "duration": 5.2},
+	"results": {"utterances": [{"start": 0.0, "end": 5.2, "speaker": 0, "transcript": "Hello"}]}
+}`
+
+// TestCostEstimateCountsTheChannelsDeepgramProcessed covers a stereo
+// recording uploaded as it is. Deepgram bills the channels it reports
+// processing, one for a request without multichannel. Only a response that
+// does not report them falls back to the upload's channels, read with ffprobe
+// even when nothing is prepared, and then to one. A cache hit estimates the
+// same as the run that made it.
+func TestCostEstimateCountsTheChannelsDeepgramProcessed(t *testing.T) {
 	stereo, _ := deepgram.EstimateCostUSD(5.2, 2, deepgram.Options{Model: defaultModel, Terms: terms.DefaultTechTerms()})
 	mono, _ := deepgram.EstimateCostUSD(5.2, 1, deepgram.Options{Model: defaultModel, Terms: terms.DefaultTechTerms()})
 	for _, tc := range []struct {
 		name     string
+		response string
 		args     []string
 		probeErr error
 		want     float64
 	}{
-		{"nothing to cut", []string{"--no-mono", "--trim-mode", "silence"}, nil, stereo},
-		{"preprocessing off", []string{"--no-preprocess"}, nil, stereo},
-		{"merging and trimming off", []string{"--no-mono", "--trim-mode", "none"}, nil, stereo},
-		{"no ffprobe", []string{"--no-preprocess"}, errors.New("ffprobe missing"), mono},
+		{"reported, nothing to cut", transcribeResponseJSON, []string{"--no-mono", "--trim-mode", "silence"}, nil, mono},
+		{"reported, preprocessing off", transcribeResponseJSON, []string{"--no-preprocess"}, nil, mono},
+		{"unreported, nothing to cut", transcribeResponseWithoutChannelsJSON, []string{"--no-mono", "--trim-mode", "silence"}, nil, stereo},
+		{"unreported, preprocessing off", transcribeResponseWithoutChannelsJSON, []string{"--no-preprocess"}, nil, stereo},
+		{"unreported, trimming off", transcribeResponseWithoutChannelsJSON, []string{"--trim-mode", "none"}, nil, stereo},
+		{"unreported, no ffprobe", transcribeResponseWithoutChannelsJSON, []string{"--no-preprocess"}, errors.New("ffprobe missing"), mono},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			server := newTranscribeServer(t, transcribeResponseJSON)
+			server := newTranscribeServer(t, tc.response)
 			cacheDir := t.TempDir()
 			audioPath := writeAudio(t, t.TempDir(), "interview.m4a", "fake stereo audio")
 			for _, cacheHit := range []bool{false, true} {
@@ -721,17 +703,6 @@ func TestChannelCountStopsOnCancellation(t *testing.T) {
 	cancel()
 	if _, err := run.prepareUpload(); !errors.Is(err, context.Canceled) {
 		t.Fatalf("got %v", err)
-	}
-}
-
-func TestPrepareUploadLeavesMonoAudioAlone(t *testing.T) {
-	media := &fakeMedia{t: t, sourceDuration: "10"}
-	run, _, stderr := newPrepareRun(t, media, monoOnly())
-	cleanup, err := run.prepareUpload()
-	cleanup()
-	if err != nil || run.uploadPath != run.audioPath || media.prepared != "" || run.uploadChannels != 1 ||
-		!strings.Contains(stderr.String(), "The recording has one channel already; uploading original audio.") {
-		t.Fatalf("error %v upload %s prepared %q: %s", err, run.uploadPath, media.prepared, stderr)
 	}
 }
 

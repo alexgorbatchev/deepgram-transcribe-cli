@@ -111,8 +111,8 @@ func TestFingerprintNamesWhatChangesTheUpload(t *testing.T) {
 		{"vad", vad, "mono=false;trim=vad;padding=0.3;threshold=0.5;min_speech=0.25;min_silence=1"},
 		{"silence with defaults", silence, "mono=true;trim=silence;padding=0.5;threshold=-30dB;duration=2.0"},
 		{"silence", PreprocessOptions{Trim: TrimSilence, SilenceThreshold: "-40dB", SilenceDuration: "1.5"}, "mono=false;trim=silence;padding=0;threshold=-40dB;duration=1.5"},
-		{"none ignores trim settings", PreprocessOptions{Mono: true, Trim: TrimNone, Padding: 2, VAD: defaultVAD}, "mono=true;trim=none"},
-		{"zero value", PreprocessOptions{}, "mono=false;trim=none"},
+		{"none ignores every other setting", PreprocessOptions{Mono: true, Trim: TrimNone, Padding: 2, VAD: defaultVAD}, "trim=none"},
+		{"zero value", PreprocessOptions{}, "trim=none"},
 	} {
 		if got := tc.opts.Fingerprint(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)

@@ -44,7 +44,7 @@ var ErrNoSpeech = errors.New("no speech was detected")
 
 // PreprocessOptions configures how audio is prepared before upload.
 type PreprocessOptions struct {
-	Mono             bool                 // merge all channels into one
+	Mono             bool                 // merge all channels of audio that is cut into one
 	Trim             TrimMode             // how to find the audio worth keeping; empty means TrimNone
 	SilenceThreshold string               // TrimSilence: volume below which audio is silent, e.g. "-30dB"
 	SilenceDuration  string               // TrimSilence: shortest silence removed, in seconds, e.g. "2.0"
@@ -61,6 +61,10 @@ func (o PreprocessOptions) Fingerprint() string {
 	trim := o.Trim
 	if !trim.Cuts() {
 		trim = TrimNone
+	}
+	if !trim.Cuts() {
+		// Nothing is prepared, so nothing else changes the upload.
+		return "trim=none"
 	}
 	fingerprint := fmt.Sprintf("mono=%t;trim=%s", o.Mono, trim)
 	switch trim {
@@ -93,8 +97,7 @@ type Prepared struct {
 	// SourceDuration is the input's length in seconds, counted from its
 	// decoded samples, and Duration is Path's length counted the same way.
 	// Both are exact, unlike the estimate ffprobe reports for containers
-	// without a duration index. Both are zero when the input was not decoded,
-	// which is the case for a downmix without trimming.
+	// without a duration index. Both are zero when nothing was trimmed.
 	SourceDuration float64
 	Duration       float64
 	// Channels is Path's channel count when it is prepared audio, and zero
@@ -102,8 +105,11 @@ type Prepared struct {
 	Channels int
 }
 
-// PreprocessAudio prepares audio for upload: it merges channels when Mono is
-// set, and cuts what Trim finds not worth uploading.
+// PreprocessAudio prepares audio for upload: it cuts what Trim finds not worth
+// uploading, merging the channels of what it keeps when Mono is set. A
+// recording that nothing is cut from is uploaded as it is, never re-encoded
+// only to merge its channels: Deepgram bills a request without multichannel
+// as one channel either way.
 //
 // Prepared audio is 16-bit FLAC at the input's sample rate, with the input's
 // channels or one channel after Mono. Cutting pipes the input's decoded PCM
@@ -121,7 +127,7 @@ func PreprocessAudio(ctx context.Context, inputPath string, source StreamInfo, o
 	noCleanup := func() {}
 	unchanged := Prepared{Path: inputPath}
 
-	if !opts.Mono && !opts.Trim.Cuts() {
+	if !opts.Trim.Cuts() {
 		return unchanged, noCleanup, nil
 	}
 
@@ -172,15 +178,6 @@ type preparation struct {
 
 func (p *preparation) run() (Prepared, error) {
 	unchanged := Prepared{Path: p.input}
-	// A recording that is already mono has nothing to merge.
-	downmixes := p.opts.Mono && p.source.Channels != 1
-	if !p.opts.Trim.Cuts() {
-		if !downmixes {
-			return unchanged, nil
-		}
-		return p.downmix()
-	}
-
 	ranges, provenLength, err := p.detect()
 	if err != nil {
 		return Prepared{}, err
@@ -194,10 +191,9 @@ func (p *preparation) run() (Prepared, error) {
 
 	spans := toSampleSpans(ranges, p.opts.Padding, rate, unboundedSamples)
 	provenSamples := int64(math.Floor((provenLength - lengthMargin) * float64(rate)))
-	if !downmixes && len(spans) == 1 && spans[0].start == 0 && spans[0].end > provenSamples {
+	if len(spans) == 1 && spans[0].start == 0 && spans[0].end > provenSamples {
 		// One span from the start keeps the whole recording unless the
-		// recording runs past it, and a whole recording that is not merged
-		// is uploaded as it is. Detection did not prove that the recording
+		// recording runs past it, and a whole recording is uploaded as it is. Detection did not prove that the recording
 		// runs past the span, so measuring first avoids encoding audio only to
 		// discard it. Only a span ending within lengthMargin of the proven
 		// length, or one that runs to the end, gets here, so the second
@@ -224,11 +220,7 @@ func (p *preparation) run() (Prepared, error) {
 		return unchanged, ErrNoSpeech
 	}
 	if len(spans) == 1 && spans[0].start == 0 && spans[0].end == totalSamples {
-		if !downmixes {
-			return unchanged, nil
-		}
-		// Everything was kept, so the prepared audio is a plain downmix.
-		return Prepared{Path: p.output, SourceDuration: measured, Duration: measured, Channels: 1}, nil
+		return unchanged, nil
 	}
 
 	var keptSamples int64
@@ -302,15 +294,6 @@ var errEncoderStopped = errors.New("the encoder stopped reading")
 
 func samplesToSeconds(samples int64, sampleRate int) float64 {
 	return float64(samples) / float64(sampleRate)
-}
-
-// downmix merges every channel into one without cutting anything.
-func (p *preparation) downmix() (Prepared, error) {
-	args := []string{"-nostdin", "-v", "error", "-y", "-i", p.input, "-map", "0:a:0", "-ac", "1", "-c:a", "flac", "-sample_fmt", "s16", p.output}
-	if err := p.ffmpeg("downmixing audio", args...); err != nil {
-		return Prepared{}, err
-	}
-	return Prepared{Path: p.output, Channels: 1}, nil
 }
 
 // detect returns the ranges of the input, in seconds, that the trim mode
@@ -413,14 +396,6 @@ func (p *preparation) decodeArgs(channels, sampleRate int) []string {
 		"-ac", strconv.Itoa(channels), "-ar", strconv.Itoa(sampleRate),
 		"-f", "s16le", "-c:a", "pcm_s16le", "pipe:1",
 	}
-}
-
-func (p *preparation) ffmpeg(step string, args ...string) error {
-	output, err := run(p.ctx, p.runner, "ffmpeg", args...)
-	if err != nil {
-		return fmt.Errorf("ffmpeg %s failed: %w (output: %s)", step, err, strings.TrimSpace(string(output)))
-	}
-	return nil
 }
 
 // DetectMIMEType returns the MIME type corresponding to an audio file's extension.
