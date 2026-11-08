@@ -7,6 +7,9 @@
 package deps
 
 import (
+	"regexp"
+	"strings"
+
 	"github.com/alexgorbatchev/godeps"
 )
 
@@ -37,15 +40,17 @@ func Declared() []godeps.Dependency {
 			MinVersion: minFFmpegVersion,
 			InstallURL: ffmpegInstallURL,
 			// ffmpeg prints its banner for -version, not --version.
-			VersionArgs: []string{"-version"},
-			Installer:   godeps.SystemPackageManager(FFmpeg),
+			VersionArgs:  []string{"-version"},
+			ParseVersion: ParseFFmpegVersion,
+			Installer:    godeps.SystemPackageManager(FFmpeg),
 		},
 		{
-			Name:        FFprobe,
-			MinVersion:  minFFmpegVersion,
-			InstallURL:  ffmpegInstallURL,
-			VersionArgs: []string{"-version"},
-			Installer:   godeps.SystemPackageManager(FFmpeg),
+			Name:         FFprobe,
+			MinVersion:   minFFmpegVersion,
+			InstallURL:   ffmpegInstallURL,
+			VersionArgs:  []string{"-version"},
+			ParseVersion: ParseFFmpegVersion,
+			Installer:    godeps.SystemPackageManager(FFmpeg),
 		},
 	}
 }
@@ -72,6 +77,41 @@ func InitPath() error {
 	return godeps.InitManagedPath(AppName)
 }
 
+var (
+	// ffmpegBanner captures the version token of the first line that ffmpeg
+	// and ffprobe print for -version.
+	ffmpegBanner = regexp.MustCompile(`^\S+ version (\S+)`)
+	// releaseVersion matches a release number at the start of a token:
+	// "7.1.1", Debian's "7.1.1-1+b1", Ubuntu's "6.1.1-3ubuntu5", the
+	// release-branch builds' "n9.0.2-47-gb204e94e90-20261106" and static
+	// builds' "7.0-static".
+	releaseVersion = regexp.MustCompile(`^n?(\d+\.\d+(?:\.\d+)?)(?:[^\d.]|$)`)
+	// developmentBuild matches builds from the master branch, which carry no
+	// release number: git-describe "N-118000-g5f1c9a2e7b", the older
+	// "git-2020-08-31-4a0bd1b" and dated "2024-01-21-git-ef4d8b5b09-full_build".
+	developmentBuild = regexp.MustCompile(`^(?:N-\d+-g[0-9a-f]+|git-\S+|\d{4}-\d{2}-\d{2}-git-\S+)`)
+)
+
+// ParseFFmpegVersion extracts the version from the -version banner of ffmpeg
+// or ffprobe. It returns a release number such as "7.1.1", the token itself
+// for a development build, which godeps accepts as current, or an empty string
+// when the banner is unrecognizable, which godeps reports as an error.
+func ParseFFmpegVersion(_, output string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(output), "\n")
+	banner := ffmpegBanner.FindStringSubmatch(strings.TrimSpace(line))
+	if banner == nil {
+		return ""
+	}
+	token := banner[1]
+	if release := releaseVersion.FindStringSubmatch(token); release != nil {
+		return release[1]
+	}
+	if developmentBuild.MatchString(token) {
+		return token
+	}
+	return ""
+}
+
 // Find returns the report for one named dependency. Callers use it to act on the
 // program they actually need, rather than on whether every declared program is
 // in order.
@@ -92,6 +132,8 @@ func Status(report godeps.DependencyReport) string {
 		return "ok"
 	case !report.Installed:
 		return "not installed"
+	case report.DetectedVersion == "":
+		return "version unknown"
 	default:
 		return "outdated"
 	}

@@ -152,3 +152,65 @@ func TestInitPathAddsTheManagedDirectory(t *testing.T) {
 		t.Errorf("expected PATH to be unchanged on a repeat call, got %q", os.Getenv("PATH"))
 	}
 }
+
+func TestParseFFmpegVersion(t *testing.T) {
+	tests := []struct {
+		name, banner, want string
+	}{
+		{"release", "ffmpeg version 7.1.1 Copyright (c) 2000-2024 the FFmpeg developers", "7.1.1"},
+		{"two-part release", "ffprobe version 4.4 Copyright (c) 2007-2021 the FFmpeg developers", "4.4"},
+		{"release-branch build", "ffprobe version n9.0.2-47-gb204e94e90-20261106 Copyright (c) 2007-2026 the FFmpeg developers", "9.0.2"},
+		{"Debian", "ffmpeg version 7.1.1-1+b1 Copyright (c) 2000-2025 the FFmpeg developers", "7.1.1"},
+		{"Alpine", "ffmpeg version 6.1.2 Copyright (c) 2000-2024 the FFmpeg developers", "6.1.2"},
+		{"Ubuntu", "ffmpeg version 4.4.2-0ubuntu0.22.04.1 Copyright (c) 2000-2021 the FFmpeg developers", "4.4.2"},
+		{"static build", "ffmpeg version 7.0-static https://johnvansickle.com/ffmpeg/  Copyright (c) 2000-2024 the FFmpeg developers", "7.0"},
+		{"git describe on master", "ffmpeg version N-118000-g5f1c9a2e7b-20250101 Copyright (c) 2000-2025 the FFmpeg developers", "N-118000-g5f1c9a2e7b-20250101"},
+		{"dated git build", "ffmpeg version 2024-01-21-git-ef4d8b5b09-full_build-www.gyan.dev Copyright (c) 2000-2024 the FFmpeg developers", "2024-01-21-git-ef4d8b5b09-full_build-www.gyan.dev"},
+		{"old git build", "ffmpeg version git-2020-08-31-4a0bd1b Copyright (c) 2000-2020 the FFmpeg developers", "git-2020-08-31-4a0bd1b"},
+		{"only the first line counts", "\n  ffprobe version 6.1.1-3ubuntu5 Copyright\nbuilt with gcc 13 version 13.2", "6.1.1"},
+		{"no version token", "ffmpeg version", ""},
+		{"unrecognized token", "ffmpeg version custom-build Copyright (c) the FFmpeg developers", ""},
+		{"not a banner", "command not found", ""},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ParseFFmpegVersion("ffmpeg", tt.banner); got != tt.want {
+				t.Errorf("ParseFFmpegVersion(%q) = %q, want %q", tt.banner, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestManagerAcceptsRealWorldBannersForBothPrograms(t *testing.T) {
+	tests := []struct {
+		name, version string
+		wantStatus    string
+		wantError     string
+	}{
+		{"release-branch build", "n9.0.2-47-gb204e94e90-20261106", "ok", ""},
+		{"Debian", "7.1.1-1+b1", "ok", ""},
+		{"git describe on master", "N-118000-g5f1c9a2e7b", "ok", ""},
+		{"dated git build", "2024-01-21-git-ef4d8b5b09-full_build-www.gyan.dev", "ok", ""},
+		{"too old Ubuntu", "4.2.7-0ubuntu0.1", "outdated", "outdated"},
+		{"unrecognized", "custom-build", "version unknown", "could not parse"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			banner := "ffmpeg version " + tt.version + " Copyright (c) 2000-2026 the FFmpeg developers\n"
+			reports, _ := NewManager(stubRunner(banner, nil)).Verify(context.Background())
+			for _, name := range []string{FFmpeg, FFprobe} {
+				report, found := Find(reports, name)
+				if !found {
+					t.Fatalf("no report for %s", name)
+				}
+				if got := Status(report); got != tt.wantStatus {
+					t.Errorf("%s status = %q, want %q (%+v)", name, got, tt.wantStatus, report)
+				}
+				if (tt.wantError == "") != (report.Error == "") || !strings.Contains(report.Error, tt.wantError) {
+					t.Errorf("%s error = %q, want it to mention %q", name, report.Error, tt.wantError)
+				}
+			}
+		})
+	}
+}
