@@ -210,6 +210,7 @@ type transcriptRun struct {
 	sourceKey  string
 	optionsKey string
 
+	client          *deepgram.Client
 	uploadPath      string
 	response        *deepgram.PreRecordedResponse
 	timeline        timeline.Timeline
@@ -235,6 +236,12 @@ func runTranscriptCreate(cmd *cobra.Command, g *globalOptions, opts *transcriptO
 	}
 
 	run.serveCachedResponse()
+
+	// A run that has to ask Deepgram fails on a missing key before any audio
+	// is prepared, which can take minutes for a long recording.
+	if err := run.connect(); err != nil {
+		return err
+	}
 
 	cleanup, err := run.prepareUpload()
 	if err != nil {
@@ -320,6 +327,9 @@ func (r *transcriptRun) serveCachedResponse() {
 
 	// An exact hit: same audio, same options, same keyterms.
 	if cached, err := deepgram.GetCachedResponse(cacheDir, r.optionsKey); err == nil && cached != nil {
+		if r.rejectUntimed(cached) {
+			return
+		}
 		r.out.Status("Cache hit for %s, serving the cached response.", name)
 		r.out.Detail("cache_key: %s", r.optionsKey)
 		r.serveEnvelope(cached)
@@ -329,7 +339,7 @@ func (r *transcriptRun) serveCachedResponse() {
 	// The same audio transcribed earlier under different options. Serving that
 	// response avoids a charge the user probably did not intend.
 	envelope, err := deepgram.FindCachedJobBySourceSHA(cacheDir, r.sourceKey)
-	if err != nil || envelope == nil || envelope.Response == nil {
+	if err != nil || envelope == nil || envelope.Response == nil || r.rejectUntimed(envelope) {
 		return
 	}
 
@@ -345,6 +355,37 @@ func (r *transcriptRun) serveCachedResponse() {
 	r.out.Detail("cache_key: %s", envelope.Record.SHA256)
 
 	r.serveEnvelope(envelope)
+}
+
+// rejectUntimed reports whether a cached response must not be served because
+// its times cannot be placed on the original recording: it was preprocessed,
+// but saved without the ranges trimming kept. JSON promises original-timeline
+// times, so such a response is transcribed again and saved with its ranges.
+// Markdown is for reading and serves it with a warning instead.
+func (r *transcriptRun) rejectUntimed(envelope *deepgram.JobRecordEnvelope) bool {
+	if envelope.Timeline != nil || !envelope.Record.Preprocessed || r.opts.format != formatJSON {
+		return false
+	}
+	r.out.Warn("The cached transcript for %s has no record of what trimming cut, so its times cannot be mapped to the original recording; transcribing it again.", filepath.Base(r.audioPath))
+	r.out.Detail("cache_key: %s", envelope.Record.SHA256)
+	return true
+}
+
+// connect creates the Deepgram client when the run has to ask Deepgram, and
+// fails when no API key was given. A cached answer needs no key.
+func (r *transcriptRun) connect() error {
+	if r.response != nil {
+		return nil
+	}
+
+	r.client = r.global.newClient()
+	if r.client == nil {
+		return cliout.WithHint(
+			errors.New("no Deepgram API key was given"),
+			fmt.Sprintf("Set %s in your environment, or pass --api-key.", apiKeyEnvVar),
+		)
+	}
+	return nil
 }
 
 // serveEnvelope answers the run from a cached response and the timeline its
@@ -370,30 +411,26 @@ func (r *transcriptRun) serveEnvelope(envelope *deepgram.JobRecordEnvelope) {
 // which may retain billable silence but still produces a transcript, so this
 // reports the problem and lets the run continue.
 func (r *transcriptRun) preprocessingReady() bool {
-	// Inspect both reports so diagnostics identify the unavailable tool.
+	// Inspect both reports so diagnostics identify the unavailable tool and
+	// why, including a version banner that could not be read.
 	reports, _ := r.global.newDependencyManager().Verify(r.cmd.Context())
 
-	report, found := deps.Find(reports, deps.FFmpeg)
-	if found && report.Satisfied {
-		probe, probeFound := deps.Find(reports, deps.FFprobe)
-		if probeFound && probe.Satisfied {
-			return true
+	for _, name := range []string{deps.FFmpeg, deps.FFprobe} {
+		report, found := deps.Find(reports, name)
+		if found && report.Satisfied {
+			continue
 		}
-		r.out.Warn("ffprobe is not usable; uploading original audio without preprocessing.")
-		r.out.Hint("Run `deepgram-transcribe dependency install` to set ffprobe up.")
+		if found && report.Error != "" {
+			r.out.Warn("%s", report.Error)
+		} else {
+			r.out.Warn("%s is not usable.", name)
+		}
+		r.out.Status("Uploading original audio without preprocessing.")
+		r.out.Hint("Run `deepgram-transcribe dependency install` to set %s up.", name)
 		return false
 	}
 
-	if found && report.Error != "" {
-		r.out.Warn("%s", report.Error)
-	} else {
-		r.out.Warn("ffmpeg is not usable.")
-	}
-
-	r.out.Status("Uploading original audio without preprocessing.")
-	r.out.Hint("Run `deepgram-transcribe dependency install` to set ffmpeg up.")
-
-	return false
+	return true
 }
 
 // prepareUpload selects prepared audio only when it is shorter than the source.
@@ -499,14 +536,6 @@ func (r *transcriptRun) fetchTranscript() error {
 		return nil
 	}
 
-	client := r.global.newClient()
-	if client == nil {
-		return cliout.WithHint(
-			errors.New("no Deepgram API key was given"),
-			fmt.Sprintf("Set %s in your environment, or pass --api-key.", apiKeyEnvVar),
-		)
-	}
-
 	payload, err := r.uploadBytes()
 	if err != nil {
 		return err
@@ -515,7 +544,7 @@ func (r *transcriptRun) fetchTranscript() error {
 	r.out.Status("Transcribing %s with the %s model.", filepath.Base(r.audioPath), r.opts.model)
 	r.out.Detail("upload_bytes: %d terms: %d", len(payload), len(r.keyTerms))
 
-	response, err := client.Transcribe(
+	response, err := r.client.Transcribe(
 		r.cmd.Context(),
 		bytes.NewReader(payload),
 		audio.DetectMIMEType(r.audioPath),

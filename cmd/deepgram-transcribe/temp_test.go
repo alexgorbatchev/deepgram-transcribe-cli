@@ -99,7 +99,12 @@ func TestTranscriptTemporaryAudioLifecycle(t *testing.T) {
 			if strings.HasPrefix(stage, "cancel ") && !errors.Is(err, context.Canceled) {
 				t.Errorf("expected cancellation, got %v", err)
 			}
-			if prepared == "" || filepath.Dir(filepath.Dir(prepared)) != os.TempDir() {
+			if stage == "missing key" {
+				// The key is checked before any audio is prepared.
+				if prepared != "" {
+					t.Errorf("audio was prepared for a run that cannot upload it: %s", prepared)
+				}
+			} else if prepared == "" || filepath.Dir(filepath.Dir(prepared)) != os.TempDir() {
 				t.Errorf("prepared audio %q is outside OS temp directory %q", prepared, os.TempDir())
 			}
 			if left, err := os.ReadDir(tmpDir); err != nil || len(left) != 0 {

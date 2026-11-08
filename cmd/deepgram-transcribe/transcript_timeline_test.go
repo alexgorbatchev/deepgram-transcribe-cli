@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,8 +9,13 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/alexgorbatchev/deepgram-transcribe-cli/internal/cliout"
+	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/audio"
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/deepgram"
+	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/terms"
+	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/timeline"
 )
 
 // trimmedResponseJSON is what Deepgram returns for audio that kept 0-5 s and
@@ -208,5 +214,135 @@ func TestCachedResponseWithoutTimelineWarnsWhenItWasPreprocessed(t *testing.T) {
 		if warned != preprocessed || !strings.Contains(out.String(), "cached words") {
 			t.Fatalf("preprocessed %t: warned %t\n%s", preprocessed, warned, errOut)
 		}
+	}
+}
+
+// defaultRequestKey is the cache key of a default `transcript create` request
+// for audioBytes.
+func defaultRequestKey(audioBytes string) string {
+	return deepgram.CacheKey([]byte(audioBytes), deepgram.Options{
+		Model:           defaultModel,
+		Language:        defaultLanguage,
+		DiarizeModel:    deepgram.DiarizeModelLatest,
+		SmartFormatting: true,
+		Utterances:      true,
+		Punctuate:       true,
+		Terms:           terms.CombineTerms(terms.DefaultTechTerms()),
+	})
+}
+
+func TestJSONTranscribesAgainWhenTheCachedTimelineIsUnknown(t *testing.T) {
+	audioBytes := "sixty seconds of audio cached without a timeline"
+	for _, tc := range []struct{ name, key string }{
+		{"exact hit", defaultRequestKey(audioBytes)},
+		{"audio content hit", "earlier-options-key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, requests := countingServer(t, trimmedResponseJSON)
+			cacheDir := t.TempDir()
+			audioPath := writeAudio(t, t.TempDir(), "session.wav", audioBytes)
+			if err := deepgram.SaveJobEnvelope(cacheDir, tc.key, deepgram.JobRecordEnvelope{
+				Record: deepgram.JobRecord{
+					SHA256: tc.key, SourceSHA256: deepgram.SourceAudioKey([]byte(audioBytes)), Preprocessed: true, Timestamp: time.Now(),
+				},
+				Response: &deepgram.PreRecordedResponse{Results: deepgram.Results{Utterances: []deepgram.Utterance{{Transcript: "untimed words"}}}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			root, out, errOut := newTestCLIWithRunner(t, cacheDir, server.URL, trimmedMedia(t).run)
+			root.SetArgs([]string{"transcript", "create", audioPath, "--api-key", "test-key", "--format", "json",
+				"--trim-mode", "silence", "--trim-padding", "0", "--no-mono"})
+			if err := root.Execute(); err != nil {
+				t.Fatalf("transcript create failed: %v\n%s", err, errOut)
+			}
+
+			if requests.Load() != 1 {
+				t.Fatalf("Deepgram was asked %d times, want once", requests.Load())
+			}
+			if !strings.Contains(errOut.String(), "cannot be mapped to the original recording; transcribing it again") {
+				t.Errorf("missing explanation on stderr:\n%s", errOut)
+			}
+			var doc struct {
+				CacheHit   bool              `json:"cache_hit"`
+				KeptRanges []json.RawMessage `json:"kept_ranges"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &doc); err != nil || doc.CacheHit || len(doc.KeptRanges) != 2 || strings.Contains(out.String(), "untimed words") {
+				t.Fatalf("unexpected document (%v):\n%s", err, out)
+			}
+
+			saved, err := deepgram.GetCachedResponse(cacheDir, defaultRequestKey(audioBytes))
+			if err != nil || saved.Timeline == nil || len(saved.Timeline.Kept) != 2 {
+				t.Fatalf("fresh response not saved with its ranges: %+v %v", saved, err)
+			}
+		})
+	}
+}
+
+func TestMissingKeyFailsBeforeAnyAudioIsPrepared(t *testing.T) {
+	cacheDir := t.TempDir()
+	audioBytes := "audio that needs a fresh request"
+	if err := deepgram.SaveCachedResponse(cacheDir, defaultRequestKey(audioBytes), &deepgram.PreRecordedResponse{}, timeline.Timeline{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"cache miss", []string{"--no-cache"}},
+		{"forced", []string{"--force"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+				t.Fatalf("ran %s %v before checking the API key", name, args)
+				return nil, nil
+			}
+			audioPath := writeAudio(t, t.TempDir(), "session.wav", audioBytes)
+			root, _, _ := newTestCLIWithRunner(t, cacheDir, "", runner)
+			root.SetArgs(append([]string{"transcript", "create", audioPath}, tc.args...))
+			if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "no Deepgram API key") {
+				t.Fatalf("got %v", err)
+			}
+		})
+	}
+}
+
+func TestPreprocessingExplainsAnUnreadableProgramVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name, banner string
+		prepared     bool
+	}{
+		{"release-branch build", "ffprobe version n9.0.2-47-gb204e94e90-20261106 Copyright", true},
+		{"unrecognized", "ffprobe version custom-build Copyright", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			media := trimmedMedia(t)
+			runner := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+				if name == "ffprobe" && len(args) == 1 && args[0] == "-version" {
+					return []byte(tc.banner), nil
+				}
+				return media.run(ctx, name, args...)
+			}
+			root, out, stderr := newTestCLIWithRunner(t, t.TempDir(), "", runner)
+			root.SetContext(t.Context())
+			audioPath := writeAudio(t, t.TempDir(), "session.wav", "audio")
+			run := &transcriptRun{cmd: root, out: cliout.New(out, stderr), global: &globalOptions{depsRunner: runner},
+				opts: &transcriptOptions{trimMode: audio.TrimSilence}, audioPath: audioPath}
+			if err := run.loadSource(); err != nil {
+				t.Fatal(err)
+			}
+			cleanup, err := run.prepareUpload()
+			cleanup()
+			if err != nil || (run.uploadPath != audioPath) != tc.prepared {
+				t.Fatalf("error %v, upload %s:\n%s", err, run.uploadPath, stderr)
+			}
+			if !tc.prepared {
+				for _, want := range []string{"could not parse ffprobe version output", "Uploading original audio without preprocessing", "set ffprobe up"} {
+					if !strings.Contains(stderr.String(), want) {
+						t.Errorf("missing %q:\n%s", want, stderr)
+					}
+				}
+			}
+		})
 	}
 }
