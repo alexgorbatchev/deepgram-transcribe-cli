@@ -60,9 +60,6 @@ type PreprocessOptions struct {
 func (o PreprocessOptions) Fingerprint() string {
 	trim := o.Trim
 	if !trim.Cuts() {
-		trim = TrimNone
-	}
-	if !trim.Cuts() {
 		// Nothing is prepared, so nothing else changes the upload.
 		return "trim=none"
 	}
@@ -193,9 +190,9 @@ func (p *preparation) run() (Prepared, error) {
 	provenSamples := int64(math.Floor((provenLength - lengthMargin) * float64(rate)))
 	if len(spans) == 1 && spans[0].start == 0 && spans[0].end > provenSamples {
 		// One span from the start keeps the whole recording unless the
-		// recording runs past it, and a whole recording is uploaded as it is. Detection did not prove that the recording
-		// runs past the span, so measuring first avoids encoding audio only to
-		// discard it. Only a span ending within lengthMargin of the proven
+		// recording runs past it, and a whole recording is uploaded as it is.
+		// Detection did not prove that the recording runs past the span, so
+		// measuring first avoids encoding audio only to discard it. Only a span ending within lengthMargin of the proven
 		// length, or one that runs to the end, gets here, so the second
 		// decode that a cut tail then needs is rare.
 		totalSamples, err := p.cut(nil, channels)

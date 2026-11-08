@@ -479,8 +479,8 @@ func (r *transcriptRun) preprocessingReady() bool {
 }
 
 // prepareUpload trims the recording, and uploads the prepared audio when
-// trimming cut something, which makes it shorter. It is skipped when a cached response already answered the request, because
-// nothing will be uploaded.
+// trimming cut something, which makes it shorter. It is skipped when a cached
+// response already answered the request, because nothing will be uploaded.
 //
 // The returned function removes the temporary audio and is safe to call even
 // when no file was written.
