@@ -9,6 +9,7 @@ import (
 
 func TestProbe(t *testing.T) {
 	valid := StreamInfo{Duration: 12.345, SampleRate: 48000, Channels: 2}
+	unknownDuration := StreamInfo{SampleRate: 48000, Channels: 2}
 	for _, tc := range []struct {
 		name, output string
 		runErr       error
@@ -16,8 +17,10 @@ func TestProbe(t *testing.T) {
 	}{
 		{"valid", `{"streams":[{"duration":"12.345","sample_rate":"48000","channels":2}]}`, nil, valid},
 		{"missing stream", `{"streams":[]}`, nil, StreamInfo{}},
-		{"missing duration", `{"streams":[{"sample_rate":"48000","channels":2}]}`, nil, StreamInfo{}},
-		{"unavailable", `{"streams":[{"duration":"N/A","sample_rate":"48000","channels":2}]}`, nil, StreamInfo{}},
+		{"container duration", `{"streams":[{"duration":"N/A","sample_rate":"48000","channels":2}],"format":{"duration":"12.345"}}`, nil, valid},
+		{"missing duration", `{"streams":[{"sample_rate":"48000","channels":2}]}`, nil, unknownDuration},
+		{"unavailable", `{"streams":[{"duration":"N/A","sample_rate":"48000","channels":2}],"format":{"duration":"N/A"}}`, nil, unknownDuration},
+		{"invalid container duration", `{"streams":[{"sample_rate":"48000","channels":2}],"format":{"duration":"soon"}}`, nil, StreamInfo{}},
 		{"zero", `{"streams":[{"duration":"0","sample_rate":"48000","channels":2}]}`, nil, StreamInfo{}},
 		{"negative", `{"streams":[{"duration":"-1","sample_rate":"48000","channels":2}]}`, nil, StreamInfo{}},
 		{"not finite", `{"streams":[{"duration":"NaN","sample_rate":"48000","channels":2}]}`, nil, StreamInfo{}},
@@ -29,7 +32,7 @@ func TestProbe(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			runner := func(ctx context.Context, name string, args ...string) ([]byte, error) {
-				wantArgs := []string{"-v", "error", "-select_streams", "a:0", "-show_entries", "stream=duration,sample_rate,channels", "-of", "json", "-i", "-recording.opus"}
+				wantArgs := []string{"-v", "error", "-select_streams", "a:0", "-show_entries", "stream=duration,sample_rate,channels:format=duration", "-of", "json", "-i", "-recording.opus"}
 				if name != "ffprobe" || !reflect.DeepEqual(args, wantArgs) || ctx != t.Context() {
 					t.Fatalf("unexpected probe: %s %v", name, args)
 				}

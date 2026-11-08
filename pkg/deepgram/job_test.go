@@ -347,7 +347,7 @@ func TestFindJobRecordByTargetIgnoresMatchingFilenames(t *testing.T) {
 		Filename:     "interview.m4a",
 		FilePath:     filepath.Join(dir, "first", "interview.m4a"),
 		SourceSHA256: SourceAudioKey(recorded),
-		SHA256:       CacheKey(recorded, Options{}),
+		SHA256:       CacheKey(recorded, Options{}, ""),
 	}); err != nil {
 		t.Fatalf("SaveJobRecord failed: %v", err)
 	}

@@ -33,7 +33,7 @@ Workspace for `deepgram-transcribe-cli` — a Go CLI utility (`deepgram-transcri
 - `internal/cliout/`: the dual-mode output layer (`AGENT=1`), covering statuses, fields, tables, rules and hinted errors.
 - `internal/deps/`: `ffmpeg` and `ffprobe`, declared for `godeps` with minimum versions, the shared ffmpeg package installation strategy and managed PATH setup.
 - `pkg/deepgram/`: Deepgram API client (`Client`), URL builder, options, local SHA-256 response store (`cache.go`), job history (`job.go`) and response models (`types.go`).
-- `pkg/audio/`: `ffprobe` stream details (`Probe`), `ffmpeg` preprocessing (`PreprocessAudio`) for stereo-to-mono downmixing and trimming, plus MIME detection. Trimming finds kept ranges with the pure-Go Silero VAD (`github.com/zserge/govad`, `vad.go`) or ffmpeg `silencedetect` (`trim.go`), then cuts decoded PCM by sample so the kept ranges are exact.
+- `pkg/audio/`: `ffprobe` stream details (`Probe`), `ffmpeg` preprocessing (`PreprocessAudio`) for stereo-to-mono downmixing and trimming, plus MIME detection. Trimming finds kept ranges with the pure-Go Silero VAD (`github.com/zserge/govad`, `vad.go`) or ffmpeg `silencedetect` (`trim.go`), then pipes decoded PCM from one ffmpeg through a span filter into an encoding ffmpeg (`stream.go`), cutting by sample so the kept ranges are exact without writing decoded audio to disk.
 - `pkg/timeline/`: maps times on trimmed audio back to the original recording (`Timeline`).
 - `pkg/transcriptjson/`: the `--format json` document (`Format`, `SchemaVersion`).
 - `pkg/terms/`: built-in engineering keyterms (`DefaultTechTerms`), custom keyterm parsing and file loading.
@@ -53,7 +53,7 @@ Commands follow a subject-verb hierarchy, at most three levels deep:
 ## Mandatory Maintenance Boundaries
 1. **NO LIVE API CALLS IN TESTS**: Unit tests MUST mock the Deepgram API via `httptest.NewServer`. Tests must never consume live Deepgram credits or make external network calls.
    Likewise, tests MUST inject a stub `godeps.CommandRunner` rather than run real external programs, and MUST NOT exercise `dependency install` or `dependency update` down to a branch that actually installs, because `godeps.SystemPackageManager` shells out to `brew`, `apt-get` and friends with a runner that cannot be replaced from outside that library.
-   Pass the runner through `audio.PreprocessOptions.Runner` for preprocessing tests. When testing invalid arguments on install/update before validation exists, replace the command's RunE with a test handler so the red phase cannot reach the package manager.
+   Pass the runners through `audio.PreprocessOptions.Runner` and `audio.PreprocessOptions.Stream` (piped decoders and encoder) for preprocessing tests; command tests set `globalOptions.mediaStream`. When testing invalid arguments on install/update before validation exists, replace the command's RunE with a test handler so the red phase cannot reach the package manager.
 2. **HIGH FUNCTION COVERAGE**: Maintain statement and function coverage across all domain packages (`internal/cliout`, `pkg/deepgram`, `pkg/audio`, `pkg/terms`, `pkg/markdown`, `pkg/timeline`, `pkg/transcriptjson`).
 3. **NO BINARIES IN GIT**: Compiled binaries (`bin/`) MUST be excluded via `.gitignore` and never committed to the repository.
 4. **DUAL-MODE OUTPUT**: Every new output path MUST go through `internal/cliout` so that `AGENT=1` stays token-conservative. Never print tables, rules or padding directly.

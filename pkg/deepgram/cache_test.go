@@ -22,12 +22,12 @@ func TestCacheKey(t *testing.T) {
 	opts4 := Options{Model: "nova-3", Terms: []string{"Go", "Kubernetes"}, DiarizeModel: DiarizeModelLatest}
 	opts5 := Options{Model: "nova-3", Terms: []string{"Go", "Kubernetes"}, DiarizeModel: "v1"}
 
-	key1 := CacheKey(audio1, opts1)
-	key2 := CacheKey(audio1, opts2)
-	key3 := CacheKey(audio2, opts1)
-	key4 := CacheKey(audio1, opts3)
-	key5 := CacheKey(audio1, opts4)
-	key6 := CacheKey(audio1, opts5)
+	key1 := CacheKey(audio1, opts1, "mono=true;trim=vad")
+	key2 := CacheKey(audio1, opts2, "mono=true;trim=vad")
+	key3 := CacheKey(audio2, opts1, "mono=true;trim=vad")
+	key4 := CacheKey(audio1, opts3, "mono=true;trim=vad")
+	key5 := CacheKey(audio1, opts4, "mono=true;trim=vad")
+	key6 := CacheKey(audio1, opts5, "mono=true;trim=vad")
 
 	if key1 != key2 {
 		t.Errorf("expected identical keys for same audio & options, got %s vs %s", key1, key2)
@@ -50,6 +50,12 @@ func TestCacheKey(t *testing.T) {
 
 	if key5 == key6 {
 		t.Errorf("expected different keys for different diarizer versions, got same %s", key5)
+	}
+
+	// Trimming changes what Deepgram hears, so a response to audio prepared
+	// one way cannot stand in for another.
+	if key1 == CacheKey(audio1, opts1, "mono=true;trim=none") {
+		t.Errorf("expected different keys for different preparation, got same %s", key1)
 	}
 }
 

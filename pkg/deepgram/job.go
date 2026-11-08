@@ -86,8 +86,11 @@ func CalculateCostWithOptions(durationSeconds float64, channels int, opts Option
 	if !priced {
 		return CostUnknown
 	}
-	return fmt.Sprintf("$%.3f", cost)
+	return FormatCostUSD(cost)
 }
+
+// FormatCostUSD formats a cost in US dollars the way estimates are shown.
+func FormatCostUSD(cost float64) string { return fmt.Sprintf("$%.3f", cost) }
 
 // JobRecord represents persistent metadata for a completed transcription job.
 type JobRecord struct {

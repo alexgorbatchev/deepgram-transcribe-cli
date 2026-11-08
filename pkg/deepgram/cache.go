@@ -35,10 +35,14 @@ func SourceAudioKey(audioData []byte) string {
 	return hex.EncodeToString(h[:])
 }
 
-// CacheKey computes a deterministic SHA-256 hash based on audio content and request options.
-func CacheKey(audioData []byte, opts Options) string {
+// CacheKey computes a deterministic SHA-256 hash based on audio content,
+// request options and preparation, which describes how the audio was prepared
+// before upload (see audio.PreprocessOptions.Fingerprint): trimming changes
+// what Deepgram hears, so it changes the response.
+func CacheKey(audioData []byte, opts Options, preparation string) string {
 	h := sha256.New()
 	h.Write(audioData)
+	h.Write([]byte(":preparation=" + preparation))
 	h.Write([]byte(opts.Model))
 	h.Write([]byte(opts.Language))
 

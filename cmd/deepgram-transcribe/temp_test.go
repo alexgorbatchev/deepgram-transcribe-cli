@@ -28,7 +28,6 @@ func TestTranscriptTemporaryAudioLifecycle(t *testing.T) {
 				if len(args) == 1 && args[0] == "-version" {
 					return []byte(strings.Replace(ffmpegVersionOutput, "ffmpeg version", name+" version", 1)), nil
 				}
-				target := args[len(args)-1]
 				if name == "ffprobe" {
 					// Trimmed audio is measured from its decoded samples, so the
 					// only probe is of the source.
@@ -43,18 +42,28 @@ func TestTranscriptTemporaryAudioLifecycle(t *testing.T) {
 				if strings.Contains(joined, "silencedetect=") {
 					return []byte("lavfi.silence_start=2\nlavfi.silence_end=7\n"), nil
 				}
-				if strings.Contains(joined, "pcm_s16le") {
-					return nil, os.WriteFile(target, make([]byte, 20000), 0o600)
+				t.Errorf("unexpected %s %v", name, args)
+				return nil, errors.New("unexpected program")
+			}
+			stream := func(ctx context.Context, stdin io.Reader, stdout io.Writer, _ string, args ...string) error {
+				target := args[len(args)-1]
+				if target == "pipe:1" {
+					_, err := stdout.Write(make([]byte, 20000))
+					return err
 				}
-				prepared = args[len(args)-1]
-				if err := os.WriteFile(prepared, []byte("prepared"), 0o600); err != nil {
-					return nil, err
+				prepared = target
+				data, err := io.ReadAll(stdin)
+				if err != nil {
+					return err
+				}
+				if err := os.WriteFile(prepared, data, 0o600); err != nil {
+					return err
 				}
 				if stage == "cancel encoding" {
 					cancel()
-					return nil, ctx.Err()
+					return ctx.Err()
 				}
-				return nil, nil
+				return nil
 			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if _, err := os.Stat(prepared); err != nil {
@@ -81,7 +90,7 @@ func TestTranscriptTemporaryAudioLifecycle(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			root, _, _ := newTestCLIWithRunner(t, t.TempDir(), server.URL, runner)
+			root, _, _ := newTestCLIWithPrograms(t, t.TempDir(), server.URL, runner, stream)
 			source := writeAudio(t, t.TempDir(), "recording.wav", "source")
 			args := []string{"transcript", "create", source, "--no-cache", "--trim-mode", "silence"}
 			if stage != "missing key" {

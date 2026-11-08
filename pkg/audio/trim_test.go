@@ -2,8 +2,6 @@ package audio
 
 import (
 	"math"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -82,16 +80,47 @@ func TestToSampleSpans(t *testing.T) {
 	}
 }
 
-func TestCutPCMReportsMissingFiles(t *testing.T) {
-	dir := t.TempDir()
-	if err := cutPCM(filepath.Join(dir, "missing.pcm"), filepath.Join(dir, "out.pcm"), nil, 2); err == nil || !strings.Contains(err.Error(), "opening decoded audio") {
-		t.Fatalf("got %v", err)
+func TestClampSpansCutsAtTheDecodedEnd(t *testing.T) {
+	spans := toSampleSpans([]timeline.Range{{Start: 1, End: 2}, {Start: 4, End: 6}, {Start: 20, End: math.Inf(1)}}, 0, 1000, unboundedSamples)
+	if want := []sampleSpan{{1000, 2000}, {4000, 6000}, {20000, unboundedSamples}}; !reflect.DeepEqual(spans, want) {
+		t.Fatalf("spans %v, want %v", spans, want)
 	}
-	src := filepath.Join(dir, "src.pcm")
-	if err := os.WriteFile(src, countingPCM(10, 1), 0o600); err != nil {
-		t.Fatal(err)
+	for _, tc := range []struct {
+		total int64
+		want  []sampleSpan
+	}{
+		{30000, []sampleSpan{{1000, 2000}, {4000, 6000}, {20000, 30000}}},
+		{5000, []sampleSpan{{1000, 2000}, {4000, 5000}}},
+		{4000, []sampleSpan{{1000, 2000}}},
+		{500, nil},
+	} {
+		if got := clampSpans(spans, tc.total); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("total %d: got %v, want %v", tc.total, got, tc.want)
+		}
 	}
-	if err := cutPCM(src, filepath.Join(dir, "missing", "out.pcm"), nil, 2); err == nil || !strings.Contains(err.Error(), "creating trimmed audio") {
-		t.Fatalf("got %v", err)
+}
+
+func TestFingerprintNamesWhatChangesTheUpload(t *testing.T) {
+	vad := PreprocessOptions{Trim: TrimVAD, Padding: 0.3, VAD: defaultVAD, SilenceThreshold: "-50dB"}
+	silence := PreprocessOptions{Mono: true, Trim: TrimSilence, Padding: 0.5, VAD: defaultVAD}
+	for _, tc := range []struct {
+		name string
+		opts PreprocessOptions
+		want string
+	}{
+		{"vad", vad, "mono=false;trim=vad;padding=0.3;threshold=0.5;min_speech=0.25;min_silence=1"},
+		{"silence with defaults", silence, "mono=true;trim=silence;padding=0.5;threshold=-30dB;duration=2.0"},
+		{"silence", PreprocessOptions{Trim: TrimSilence, SilenceThreshold: "-40dB", SilenceDuration: "1.5"}, "mono=false;trim=silence;padding=0;threshold=-40dB;duration=1.5"},
+		{"none ignores trim settings", PreprocessOptions{Mono: true, Trim: TrimNone, Padding: 2, VAD: defaultVAD}, "mono=true;trim=none"},
+		{"zero value", PreprocessOptions{}, "mono=false;trim=none"},
+	} {
+		if got := tc.opts.Fingerprint(); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	changed := vad
+	changed.VAD.MinSilence = 2
+	if changed.Fingerprint() == vad.Fingerprint() {
+		t.Fatal("a different minimum silence left the fingerprint unchanged")
 	}
 }

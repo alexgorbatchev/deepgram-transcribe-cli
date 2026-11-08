@@ -61,7 +61,7 @@ func countingServer(t *testing.T, body string) (*httptest.Server, *atomic.Int32)
 
 func runTrimmedTranscript(t *testing.T, cacheDir, endpoint, audioPath string, extra ...string) string {
 	t.Helper()
-	root, out, errOut := newTestCLIWithRunner(t, cacheDir, endpoint, trimmedMedia(t).run)
+	root, out, errOut := newTestCLIWithMedia(t, cacheDir, endpoint, trimmedMedia(t))
 	args := append([]string{"transcript", "create", audioPath, "--api-key", "test-key", "--trim-mode", "silence", "--trim-padding", "0", "--no-mono"}, extra...)
 	root.SetArgs(args)
 	if err := root.Execute(); err != nil {
@@ -217,9 +217,20 @@ func TestCachedResponseWithoutTimelineWarnsWhenItWasPreprocessed(t *testing.T) {
 	}
 }
 
-// defaultRequestKey is the cache key of a default `transcript create` request
-// for audioBytes.
-func defaultRequestKey(audioBytes string) string {
+// trimmedPreparation is how runTrimmedTranscript prepares audio.
+var trimmedPreparation = audio.PreprocessOptions{
+	Trim: audio.TrimSilence, SilenceThreshold: audio.DefaultSilenceThreshold, SilenceDuration: audio.DefaultSilenceDuration,
+}
+
+// defaultPreparation is how a `transcript create` without flags prepares audio.
+var defaultPreparation = audio.PreprocessOptions{
+	Mono: true, Trim: audio.TrimVAD, Padding: audio.DefaultTrimPadding,
+	VAD: audio.VADOptions{Threshold: audio.DefaultVADThreshold, MinSpeech: audio.DefaultVADMinSpeech, MinSilence: audio.DefaultVADMinSilence},
+}
+
+// defaultRequestKey is the cache key of a `transcript create` request with
+// default recognition options for audioBytes prepared as preparation says.
+func defaultRequestKey(audioBytes string, preparation audio.PreprocessOptions) string {
 	return deepgram.CacheKey([]byte(audioBytes), deepgram.Options{
 		Model:           defaultModel,
 		Language:        defaultLanguage,
@@ -228,13 +239,13 @@ func defaultRequestKey(audioBytes string) string {
 		Utterances:      true,
 		Punctuate:       true,
 		Terms:           terms.CombineTerms(terms.DefaultTechTerms()),
-	})
+	}, preparation.Fingerprint())
 }
 
 func TestJSONTranscribesAgainWhenTheCachedTimelineIsUnknown(t *testing.T) {
 	audioBytes := "sixty seconds of audio cached without a timeline"
 	for _, tc := range []struct{ name, key string }{
-		{"exact hit", defaultRequestKey(audioBytes)},
+		{"exact hit", defaultRequestKey(audioBytes, trimmedPreparation)},
 		{"audio content hit", "earlier-options-key"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -250,7 +261,7 @@ func TestJSONTranscribesAgainWhenTheCachedTimelineIsUnknown(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			root, out, errOut := newTestCLIWithRunner(t, cacheDir, server.URL, trimmedMedia(t).run)
+			root, out, errOut := newTestCLIWithMedia(t, cacheDir, server.URL, trimmedMedia(t))
 			root.SetArgs([]string{"transcript", "create", audioPath, "--api-key", "test-key", "--format", "json",
 				"--trim-mode", "silence", "--trim-padding", "0", "--no-mono"})
 			if err := root.Execute(); err != nil {
@@ -271,7 +282,7 @@ func TestJSONTranscribesAgainWhenTheCachedTimelineIsUnknown(t *testing.T) {
 				t.Fatalf("unexpected document (%v):\n%s", err, out)
 			}
 
-			saved, err := deepgram.GetCachedResponse(cacheDir, defaultRequestKey(audioBytes))
+			saved, err := deepgram.GetCachedResponse(cacheDir, defaultRequestKey(audioBytes, trimmedPreparation))
 			if err != nil || saved.Timeline == nil || len(saved.Timeline.Kept) != 2 {
 				t.Fatalf("fresh response not saved with its ranges: %+v %v", saved, err)
 			}
@@ -282,7 +293,7 @@ func TestJSONTranscribesAgainWhenTheCachedTimelineIsUnknown(t *testing.T) {
 func TestMissingKeyFailsBeforeAnyAudioIsPrepared(t *testing.T) {
 	cacheDir := t.TempDir()
 	audioBytes := "audio that needs a fresh request"
-	if err := deepgram.SaveCachedResponse(cacheDir, defaultRequestKey(audioBytes), &deepgram.PreRecordedResponse{}, timeline.Timeline{}); err != nil {
+	if err := deepgram.SaveCachedResponse(cacheDir, defaultRequestKey(audioBytes, defaultPreparation), &deepgram.PreRecordedResponse{}, timeline.Timeline{}); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -326,7 +337,7 @@ func TestPreprocessingExplainsAnUnreadableProgramVersion(t *testing.T) {
 			root, out, stderr := newTestCLIWithRunner(t, t.TempDir(), "", runner)
 			root.SetContext(t.Context())
 			audioPath := writeAudio(t, t.TempDir(), "session.wav", "audio")
-			run := &transcriptRun{cmd: root, out: cliout.New(out, stderr), global: &globalOptions{depsRunner: runner},
+			run := &transcriptRun{cmd: root, out: cliout.New(out, stderr), global: &globalOptions{depsRunner: runner, mediaStream: media.stream},
 				opts: &transcriptOptions{trimMode: audio.TrimSilence}, audioPath: audioPath}
 			if err := run.loadSource(); err != nil {
 				t.Fatal(err)
@@ -386,6 +397,103 @@ func TestContentCacheHitDescribesTheCachedRequest(t *testing.T) {
 	for i, w := range doc.Words {
 		if w.Speaker != nil {
 			t.Errorf("word %d has invented speaker %d", i, *w.Speaker)
+		}
+	}
+}
+
+// TestRecordingWithoutSpeechIsNeverUploaded covers trimming that keeps
+// nothing: Deepgram is not asked, nothing is billed or recorded, and the
+// transcript is empty but complete.
+func TestRecordingWithoutSpeechIsNeverUploaded(t *testing.T) {
+	for _, format := range []string{formatJSON, formatMarkdown} {
+		t.Run(format, func(t *testing.T) {
+			server, requests := countingServer(t, trimmedResponseJSON)
+			cacheDir := t.TempDir()
+			audioPath := writeAudio(t, t.TempDir(), "silence.wav", "sixty seconds of silence")
+			media := &fakeMedia{t: t, sourceDuration: "60", silences: "lavfi.silence_start=0\n"}
+			root, out, errOut := newTestCLIWithMedia(t, cacheDir, server.URL, media)
+			root.SetArgs([]string{"transcript", "create", audioPath, "--api-key", "test-key", "--trim-mode", "silence", "--no-mono", "--format", format})
+			if err := root.Execute(); err != nil {
+				t.Fatalf("transcript create failed: %v\n%s", err, errOut)
+			}
+
+			if requests.Load() != 0 || media.prepared != "" {
+				t.Fatalf("Deepgram was asked %d times, prepared %q", requests.Load(), media.prepared)
+			}
+			if !strings.Contains(errOut.String(), "No speech was detected; nothing is uploaded") {
+				t.Fatalf("no explanation on stderr:\n%s", errOut)
+			}
+			if records, err := deepgram.ListJobRecords(cacheDir); err != nil || len(records) != 0 {
+				t.Fatalf("history %+v, error %v", records, err)
+			}
+
+			if format == formatMarkdown {
+				if !strings.Contains(out.String(), "*(Empty transcript)*") || !strings.Contains(out.String(), "| **Duration** | 01:00 |") {
+					t.Fatalf("unexpected Markdown:\n%s", out)
+				}
+				return
+			}
+			want := `{
+  "schema": 1,
+  "source": {
+    "filename": "silence.wav",
+    "size_bytes": 24
+  },
+  "request_id": "",
+  "model": "nova-3",
+  "language": "en",
+  "diarized": true,
+  "duration": 60,
+  "transcribed_duration": 0,
+  "cache_hit": false,
+  "cost_estimate_usd": 0,
+  "kept_ranges": [],
+  "transcript": "",
+  "words": [],
+  "utterances": []
+}
+`
+			if out.String() != want {
+				t.Fatalf("document:\n%s\nwant:\n%s", out, want)
+			}
+		})
+	}
+}
+
+// TestTrimSettingsReachTheCacheKey covers two runs that differ only in how
+// audio is trimmed: Deepgram heard different audio, so the second run's
+// response is cached under its own key and served by an exact hit.
+func TestTrimSettingsReachTheCacheKey(t *testing.T) {
+	server, requests := countingServer(t, trimmedResponseJSON)
+	cacheDir := t.TempDir()
+	audioPath := writeAudio(t, t.TempDir(), "session.wav", "sixty seconds of audio")
+
+	run := func(extra ...string) string {
+		t.Helper()
+		root, _, errOut := newTestCLIWithMedia(t, cacheDir, server.URL, trimmedMedia(t))
+		root.SetArgs(append([]string{"transcript", "create", audioPath, "--api-key", "test-key", "--trim-mode", "silence", "--trim-padding", "0", "--no-mono"}, extra...))
+		if err := root.Execute(); err != nil {
+			t.Fatalf("transcript create failed: %v\n%s", err, errOut)
+		}
+		return errOut.String()
+	}
+
+	run()
+	if hit := run("--silence-duration", "3"); !strings.Contains(hit, "from a request with different options") {
+		t.Fatalf("other trim settings were served as an exact hit:\n%s", hit)
+	}
+	run("--silence-duration", "3", "--force")
+	if hit := run("--silence-duration", "3"); !strings.Contains(hit, "serving the cached response") || strings.Contains(hit, "different options") {
+		t.Fatalf("the forced response was not served as an exact hit:\n%s", hit)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("Deepgram was asked %d times, want twice", requests.Load())
+	}
+	changed := trimmedPreparation
+	changed.SilenceDuration = "3"
+	for _, preparation := range []audio.PreprocessOptions{trimmedPreparation, changed} {
+		if _, err := deepgram.GetCachedResponse(cacheDir, defaultRequestKey("sixty seconds of audio", preparation)); err != nil {
+			t.Errorf("no response cached for %s: %v", preparation.Fingerprint(), err)
 		}
 	}
 }

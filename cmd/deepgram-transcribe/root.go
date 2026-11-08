@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/internal/deps"
+	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/audio"
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/deepgram"
 )
 
@@ -48,6 +49,10 @@ type globalOptions struct {
 	// on. It is set only by tests, so that no test depends on what happens to be
 	// installed on the machine running it.
 	depsRunner godeps.CommandRunner
+
+	// mediaStream stands in for running the ffmpeg decoders and encoder whose
+	// audio is piped. It is set only by tests, like depsRunner.
+	mediaStream audio.StreamRunner
 }
 
 // newDependencyManager returns the manager for the external programs this CLI

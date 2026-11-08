@@ -89,6 +89,19 @@ func (o *transcriptOptions) effectiveTrimMode() audio.TrimMode {
 // wantsTrim reports whether anything may be cut before upload.
 func (o *transcriptOptions) wantsTrim() bool { return o.effectiveTrimMode().Cuts() }
 
+// preprocessOptions returns how audio is prepared before upload, without the
+// programs that run it.
+func (o *transcriptOptions) preprocessOptions() audio.PreprocessOptions {
+	return audio.PreprocessOptions{
+		Mono:             o.wantsMono(),
+		Trim:             o.effectiveTrimMode(),
+		SilenceThreshold: o.silenceThreshold,
+		SilenceDuration:  o.silenceDuration,
+		VAD:              o.vad,
+		Padding:          o.trimPadding,
+	}
+}
+
 // validate checks the flags before any audio is read or any money is spent.
 func (o *transcriptOptions) validate(cmd *cobra.Command) error {
 	if o.format != formatMarkdown && o.format != formatJSON {
@@ -158,7 +171,8 @@ redirected:
 
 Before upload, the parts of the recording without speech are cut out, which
 lowers the cost. Every time in the transcript is still on the original
-recording's timeline.`,
+recording's timeline. A recording in which no speech is found is not uploaded
+at all: the transcript is empty and nothing is billed.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := opts.validate(cmd); err != nil {
@@ -215,8 +229,11 @@ type transcriptRun struct {
 	// cached response. Everything describing the transcript comes from it.
 	answered deepgram.Options
 
-	client          *deepgram.Client
-	uploadPath      string
+	client     *deepgram.Client
+	uploadPath string
+	// noSpeech is set when trimming found no speech, so nothing is uploaded
+	// and the transcript is empty.
+	noSpeech        bool
 	response        *deepgram.PreRecordedResponse
 	timeline        timeline.Timeline
 	cost            string
@@ -254,11 +271,14 @@ func runTranscriptCreate(cmd *cobra.Command, g *globalOptions, opts *transcriptO
 	}
 	defer cleanup()
 
-	if err := run.fetchTranscript(); err != nil {
-		return err
+	if run.noSpeech {
+		run.answerWithoutSpeech()
+	} else {
+		if err := run.fetchTranscript(); err != nil {
+			return err
+		}
+		run.recordJob()
 	}
-
-	run.recordJob()
 
 	return run.writeTranscript()
 }
@@ -314,7 +334,7 @@ func (r *transcriptRun) buildRequest() error {
 	}
 
 	r.sourceKey = deepgram.SourceAudioKey(r.sourceBytes)
-	r.optionsKey = deepgram.CacheKey(r.sourceBytes, r.request)
+	r.optionsKey = deepgram.CacheKey(r.sourceBytes, r.request, r.opts.preprocessOptions().Fingerprint())
 	r.answered = r.request
 
 	return nil
@@ -486,23 +506,27 @@ func (r *transcriptRun) prepareUpload() (func(), error) {
 		return noCleanup, nil
 	}
 	r.timeline.SourceDuration = source.Duration
+	if source.Duration == 0 && !r.opts.wantsTrim() {
+		// Only trimming decodes the recording, and a mono merge without it
+		// cannot be shown to be shorter without a duration to compare.
+		r.out.Warn("Could not measure the recording's duration; uploading original audio.")
+		return noCleanup, nil
+	}
 
-	prepared, cleanup, err := audio.PreprocessAudio(ctx, r.audioPath, source, audio.PreprocessOptions{
-		Mono:             r.opts.wantsMono(),
-		Trim:             r.opts.effectiveTrimMode(),
-		SilenceThreshold: r.opts.silenceThreshold,
-		SilenceDuration:  r.opts.silenceDuration,
-		VAD:              r.opts.vad,
-		Padding:          r.opts.trimPadding,
-		Runner:           r.global.depsRunner,
-	})
+	options := r.opts.preprocessOptions()
+	options.Runner = r.global.depsRunner
+	options.Stream = r.global.mediaStream
+	prepared, cleanup, err := audio.PreprocessAudio(ctx, r.audioPath, source, options)
 	// Decoded audio was counted sample by sample, which beats ffprobe's
 	// estimate for containers without a duration index.
 	if prepared.SourceDuration > 0 {
 		r.timeline.SourceDuration = prepared.SourceDuration
 	}
 	if errors.Is(err, audio.ErrNoSpeech) {
-		r.out.Warn("No speech was detected; uploading original audio.")
+		r.out.Warn("No speech was detected; nothing is uploaded and the transcript is empty.")
+		r.noSpeech = true
+		// Every part of the recording was cut.
+		r.timeline.Kept = []timeline.Range{}
 		return noCleanup, nil
 	}
 	if err != nil {
@@ -518,6 +542,9 @@ func (r *transcriptRun) prepareUpload() (func(), error) {
 		// A plain downmix is not decoded here, so ffprobe measures both files.
 		original = source.Duration
 		measured, err := audio.Probe(ctx, prepared.Path, r.global.depsRunner)
+		if err == nil && measured.Duration == 0 {
+			err = errors.New("ffprobe reports no duration for the prepared audio")
+		}
 		if err != nil {
 			cleanup()
 			if err := ctx.Err(); err != nil {
@@ -557,6 +584,16 @@ func (r *transcriptRun) reportUploadSize(size int64) {
 	default:
 		r.out.Status("Upload is %s, unchanged from the original.", formatFileSize(size))
 	}
+}
+
+// answerWithoutSpeech answers a recording in which trimming found no speech
+// with an empty transcript. Nothing was asked of Deepgram, so nothing was
+// billed, cached or recorded in history.
+func (r *transcriptRun) answerWithoutSpeech() {
+	r.response = &deepgram.PreRecordedResponse{}
+	free := 0.0
+	r.costUSD = &free
+	r.cost = deepgram.FormatCostUSD(free)
 }
 
 // fetchTranscript asks Deepgram to transcribe the recording, unless a saved

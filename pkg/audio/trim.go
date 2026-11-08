@@ -4,9 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	"io"
 	"math"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -112,7 +110,7 @@ func complement(silences []timeline.Range) []timeline.Range {
 type sampleSpan struct{ start, end int64 }
 
 // toSampleSpans widens each range by padding seconds on both sides, converts it
-// to whole samples, clamps it to the audio and merges ranges that touch.
+// to whole samples, clamps it to totalSamples and merges ranges that touch.
 // Rounding outward means a span always contains the range it came from. Ends
 // may be infinite; clamping happens before conversion to integers.
 func toSampleSpans(ranges []timeline.Range, padding float64, sampleRate int, totalSamples int64) []sampleSpan {
@@ -134,6 +132,20 @@ func toSampleSpans(ranges []timeline.Range, padding float64, sampleRate int, tot
 	return spans
 }
 
+// clampSpans cuts spans off at the end of the audio, totalSamples long, and
+// drops those that start after it.
+func clampSpans(spans []sampleSpan, totalSamples int64) []sampleSpan {
+	var clamped []sampleSpan
+	for _, s := range spans {
+		end := min(s.end, totalSamples)
+		if end <= s.start {
+			break
+		}
+		clamped = append(clamped, sampleSpan{start: s.start, end: end})
+	}
+	return clamped
+}
+
 // spansToRanges converts sample spans back to seconds of the original audio.
 func spansToRanges(spans []sampleSpan, sampleRate int) []timeline.Range {
 	ranges := make([]timeline.Range, len(spans))
@@ -144,33 +156,4 @@ func spansToRanges(spans []sampleSpan, sampleRate int) []timeline.Range {
 		}
 	}
 	return ranges
-}
-
-// cutPCM copies the sample spans of raw interleaved PCM from src to dst, end to
-// end. Working on decoded samples rather than on encoded packets is what makes
-// the kept ranges exact.
-func cutPCM(srcPath, dstPath string, spans []sampleSpan, frameBytes int64) (err error) {
-	src, err := os.Open(srcPath)
-	if err != nil {
-		return fmt.Errorf("opening decoded audio: %w", err)
-	}
-	defer func() { _ = src.Close() }() // Read-only; a close error loses nothing.
-
-	dst, err := os.Create(dstPath)
-	if err != nil {
-		return fmt.Errorf("creating trimmed audio: %w", err)
-	}
-	defer func() {
-		if closeErr := dst.Close(); closeErr != nil && err == nil {
-			err = fmt.Errorf("closing trimmed audio: %w", closeErr)
-		}
-	}()
-
-	for _, s := range spans {
-		section := io.NewSectionReader(src, s.start*frameBytes, (s.end-s.start)*frameBytes)
-		if _, err := io.Copy(dst, section); err != nil {
-			return fmt.Errorf("copying kept audio: %w", err)
-		}
-	}
-	return nil
 }

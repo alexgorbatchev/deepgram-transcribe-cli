@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/internal/cliout"
+	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/audio"
 )
 
 // ffmpegVersionOutput is what a healthy, current ffmpeg prints for -version.
@@ -50,6 +51,24 @@ func newTestCLI(t *testing.T, cacheDir, endpoint string) (*cobra.Command, *bytes
 func newTestCLIWithRunner(t *testing.T, cacheDir, endpoint string, runner godeps.CommandRunner) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
 
+	unexpected := func(_ context.Context, _ io.Reader, _ io.Writer, name string, args ...string) error {
+		t.Errorf("piped %s %v without a stub", name, args)
+		return errors.New("no piped program is stubbed")
+	}
+	return newTestCLIWithPrograms(t, cacheDir, endpoint, runner, unexpected)
+}
+
+// newTestCLIWithMedia is newTestCLI with media standing in for ffmpeg and
+// ffprobe.
+func newTestCLIWithMedia(t *testing.T, cacheDir, endpoint string, media *fakeMedia) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+
+	return newTestCLIWithPrograms(t, cacheDir, endpoint, media.run, media.stream)
+}
+
+func newTestCLIWithPrograms(t *testing.T, cacheDir, endpoint string, runner godeps.CommandRunner, stream audio.StreamRunner) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+
 	t.Setenv(apiKeyEnvVar, "")
 	t.Setenv("AGENT", "")
 	t.Setenv("COLUMNS", "200")
@@ -63,6 +82,7 @@ func newTestCLIWithRunner(t *testing.T, cacheDir, endpoint string, runner godeps
 		defaultCacheDir: cacheDir,
 		endpoint:        endpoint,
 		depsRunner:      runner,
+		mediaStream:     stream,
 	})
 	root.SetOut(&out)
 	root.SetErr(&errOut)

@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"reflect"
 	"strconv"
 
@@ -55,32 +56,49 @@ func (f *fakeMedia) run(_ context.Context, name string, args ...string) ([]byte,
 		return []byte(`{"streams":[{"duration":"` + duration + `","sample_rate":"1000","channels":1}]}`), nil
 	}
 
-	switch {
-	case strings.Contains(joined, "silencedetect="):
+	if strings.Contains(joined, "silencedetect=") {
 		return []byte(f.silences), nil
-	case strings.Contains(joined, "pcm_s16le"):
-		decoded := f.decodedDuration
-		if decoded == "" {
-			decoded = f.sourceDuration
-		}
-		seconds, err := strconv.ParseFloat(decoded, 64)
-		if err != nil {
-			f.t.Fatalf("decoding without a source duration: %v", err)
-		}
-		return nil, os.WriteFile(target, make([]byte, int(seconds*fakeSampleRate)*2), 0o600)
-	default:
-		f.prepared = target
-		return nil, os.WriteFile(target, []byte("larger prepared audio"), 0o600)
 	}
+	f.prepared = target
+	return nil, os.WriteFile(target, []byte("larger prepared audio"), 0o600)
+}
+
+// stream answers the piped decoders with silent PCM of the decoded duration,
+// and the encoder by writing what it is piped to the prepared file.
+func (f *fakeMedia) stream(_ context.Context, stdin io.Reader, stdout io.Writer, _ string, args ...string) error {
+	target := args[len(args)-1]
+	if target != "pipe:1" {
+		data, err := io.ReadAll(stdin)
+		if err != nil {
+			return err
+		}
+		f.prepared = target
+		return os.WriteFile(target, data, 0o600)
+	}
+	decoded := f.decodedDuration
+	if decoded == "" {
+		decoded = f.sourceDuration
+	}
+	seconds, err := strconv.ParseFloat(decoded, 64)
+	if err != nil {
+		f.t.Errorf("decoding without a decoded duration: %v", err)
+		return err
+	}
+	rate := fakeSampleRate
+	if strings.Contains(strings.Join(args, " "), "-ar 16000") {
+		rate = 16000
+	}
+	_, err = stdout.Write(make([]byte, int(seconds*float64(rate))*2))
+	return err
 }
 
 // newPrepareRun returns a run of transcript create that stops before upload.
 func newPrepareRun(t *testing.T, media *fakeMedia, opts *transcriptOptions) (*transcriptRun, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
-	root, out, stderr := newTestCLIWithRunner(t, t.TempDir(), "", media.run)
+	root, out, stderr := newTestCLIWithMedia(t, t.TempDir(), "", media)
 	root.SetContext(t.Context())
 	audioPath := writeAudio(t, t.TempDir(), "recording.opus", "source")
-	run := &transcriptRun{cmd: root, out: cliout.New(out, stderr), global: &globalOptions{depsRunner: media.run}, opts: opts, audioPath: audioPath}
+	run := &transcriptRun{cmd: root, out: cliout.New(out, stderr), global: &globalOptions{depsRunner: media.run, mediaStream: media.stream}, opts: opts, audioPath: audioPath}
 	if err := run.loadSource(); err != nil {
 		t.Fatal(err)
 	}
@@ -189,22 +207,40 @@ func TestPrepareUploadMeasuresDecodedAudio(t *testing.T) {
 	}
 }
 
-func TestPrepareUploadKeepsOriginalWhenTrimmingFindsNothingToDo(t *testing.T) {
-	for _, tc := range []struct {
-		name, silences, want string
-	}{
-		{"all silent", "lavfi.silence_start=0\n", "No speech was detected; uploading original audio."},
-		{"nothing silent", "", "Nothing worth cutting was found; uploading original audio."},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			media := &fakeMedia{t: t, sourceDuration: "3", silences: tc.silences}
-			run, _, stderr := newPrepareRun(t, media, &transcriptOptions{trimMode: audio.TrimSilence, noMono: true})
-			cleanup, err := run.prepareUpload()
-			cleanup()
-			if err != nil || run.uploadPath != run.audioPath || run.timeline.Trimmed() || !strings.Contains(stderr.String(), tc.want) {
-				t.Fatalf("error %v upload %s timeline %+v: %s", err, run.uploadPath, run.timeline, stderr)
-			}
-		})
+func TestPrepareUploadKeepsOriginalWhenTrimmingFindsNothingToCut(t *testing.T) {
+	media := &fakeMedia{t: t, sourceDuration: "3"}
+	run, _, stderr := newPrepareRun(t, media, &transcriptOptions{trimMode: audio.TrimSilence, noMono: true})
+	cleanup, err := run.prepareUpload()
+	cleanup()
+	if err != nil || run.uploadPath != run.audioPath || run.timeline.Trimmed() || run.noSpeech ||
+		!strings.Contains(stderr.String(), "Nothing worth cutting was found; uploading original audio.") {
+		t.Fatalf("error %v upload %s timeline %+v: %s", err, run.uploadPath, run.timeline, stderr)
+	}
+}
+
+func TestPrepareUploadUploadsNothingWithoutSpeech(t *testing.T) {
+	media := &fakeMedia{t: t, sourceDuration: "N/A", decodedDuration: "3", silences: "lavfi.silence_start=0\n"}
+	run, _, stderr := newPrepareRun(t, media, &transcriptOptions{trimMode: audio.TrimSilence, noMono: true})
+	cleanup, err := run.prepareUpload()
+	cleanup()
+	want := timeline.Timeline{SourceDuration: 3, Kept: []timeline.Range{}}
+	if err != nil || !run.noSpeech || run.uploadPath != run.audioPath || !reflect.DeepEqual(run.timeline, want) || media.prepared != "" ||
+		!strings.Contains(stderr.String(), "No speech was detected; nothing is uploaded and the transcript is empty.") {
+		t.Fatalf("error %v upload %s timeline %+v prepared %q: %s", err, run.uploadPath, run.timeline, media.prepared, stderr)
+	}
+}
+
+// TestPrepareUploadTrimsAudioWithoutADuration covers a recording whose
+// duration ffprobe cannot read, such as a live WebM capture: trimming decodes
+// it anyway, so the decoded samples measure it.
+func TestPrepareUploadTrimsAudioWithoutADuration(t *testing.T) {
+	media := &fakeMedia{t: t, sourceDuration: "N/A", decodedDuration: "60", silences: "lavfi.silence_start=5\nlavfi.silence_end=40\n"}
+	run, _, stderr := newPrepareRun(t, media, &transcriptOptions{trimMode: audio.TrimSilence, noMono: true})
+	cleanup, err := run.prepareUpload()
+	defer cleanup()
+	want := timeline.Timeline{SourceDuration: 60, Kept: []timeline.Range{{Start: 0, End: 5}, {Start: 40, End: 60}}}
+	if err != nil || run.uploadPath == run.audioPath || !reflect.DeepEqual(run.timeline, want) {
+		t.Fatalf("error %v upload %s timeline %+v: %s", err, run.uploadPath, run.timeline, stderr)
 	}
 }
 
@@ -410,7 +446,7 @@ func TestTranscriptCreateServesCachedResponseBeforeTouchingAudio(t *testing.T) {
 		Punctuate:       true,
 		Terms:           terms.CombineTerms(terms.DefaultTechTerms()),
 	}
-	optionsKey := deepgram.CacheKey([]byte(audioContent), request)
+	optionsKey := deepgram.CacheKey([]byte(audioContent), request, audio.PreprocessOptions{Trim: audio.TrimNone}.Fingerprint())
 
 	saved := &deepgram.PreRecordedResponse{
 		Metadata: deepgram.Metadata{RequestID: "cached-req-001", Duration: 15.0},
