@@ -11,10 +11,13 @@ import (
 
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"reflect"
 	"strconv"
+
+	"github.com/spf13/cobra"
 
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/internal/cliout"
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/audio"
@@ -33,6 +36,7 @@ type fakeMedia struct {
 	silences          string // what silencedetect prints
 	decodedDuration   string // decoded length of the source; empty means sourceDuration
 	probeErr          error
+	channels          int    // the source's channels; zero means one
 	prepared          string // the last prepared file ffmpeg wrote
 }
 
@@ -49,11 +53,11 @@ func (f *fakeMedia) run(_ context.Context, name string, args ...string) ([]byte,
 		if f.probeErr != nil {
 			return nil, f.probeErr
 		}
-		duration := f.sourceDuration
+		duration, channels := f.sourceDuration, max(f.channels, 1)
 		if strings.Contains(target, "transcribe-proc-") {
-			duration = f.processedDuration
+			duration, channels = f.processedDuration, 1
 		}
-		return []byte(`{"streams":[{"duration":"` + duration + `","sample_rate":"1000","channels":1}]}`), nil
+		return []byte(`{"streams":[{"duration":"` + duration + `","sample_rate":"1000","channels":` + strconv.Itoa(channels) + `}]}`), nil
 	}
 
 	if strings.Contains(joined, "silencedetect=") {
@@ -108,7 +112,7 @@ func newPrepareRun(t *testing.T, media *fakeMedia, opts *transcriptOptions) (*tr
 func monoOnly() *transcriptOptions { return &transcriptOptions{trimMode: audio.TrimNone} }
 
 func TestPrepareUploadReportsLargerAudio(t *testing.T) {
-	media := &fakeMedia{t: t, sourceDuration: "10", processedDuration: "5"}
+	media := &fakeMedia{t: t, sourceDuration: "10", processedDuration: "5", channels: 2}
 	run, out, stderr := newPrepareRun(t, media, monoOnly())
 	cleanup, err := run.prepareUpload()
 	if err != nil {
@@ -132,15 +136,16 @@ func TestPrepareUploadRequiresShorterDuration(t *testing.T) {
 			want                    string
 		}{
 			{name: "shorter", source: "10", processed: "5", shorter: true},
-			{name: "equal", source: "10", processed: "10", want: "did not shorten it"},
-			{name: "longer", source: "10", processed: "12", want: "did not shorten it"},
+			// One channel of the same length halves the billed duration.
+			{name: "equal", source: "10", processed: "10", shorter: true},
+			{name: "billed longer", source: "10", processed: "20", want: "did not lower the billed duration"},
 			{name: "unknown", source: "10", processed: "N/A", want: "Could not compare audio durations"},
 			{name: "original unknown", source: "N/A", processed: "5", want: "Could not measure the recording"},
 			{name: "probe failed", source: "10", processed: "5", probeErr: errors.New("duration probe failed"), want: "Could not measure the recording"},
 		} {
 			t.Run(mode+"/"+tc.name, func(t *testing.T) {
 				t.Setenv("AGENT", mode)
-				media := &fakeMedia{t: t, sourceDuration: tc.source, processedDuration: tc.processed, probeErr: tc.probeErr}
+				media := &fakeMedia{t: t, sourceDuration: tc.source, processedDuration: tc.processed, probeErr: tc.probeErr, channels: 2}
 				run, out, stderr := newPrepareRun(t, media, monoOnly())
 				t.Setenv("AGENT", mode)
 				run.out = cliout.New(out, stderr)
@@ -202,7 +207,7 @@ func TestPrepareUploadMeasuresDecodedAudio(t *testing.T) {
 	if run.uploadPath == run.audioPath || !reflect.DeepEqual(run.timeline, want) {
 		t.Fatalf("upload %s timeline %+v:\n%s", run.uploadPath, run.timeline, stderr)
 	}
-	if !strings.Contains(stderr.String(), "Audio duration is 15.000 s, down from 30.000 s.") {
+	if !strings.Contains(stderr.String(), "Audio is 15.000 s in 1 channel, down from 30.000 s in 1 channel.") {
 		t.Fatalf("durations not taken from the decoded audio:\n%s", stderr)
 	}
 }
@@ -629,6 +634,76 @@ func TestTranscriptCreateContinuesWithoutFFmpeg(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "dependency install") {
 		t.Errorf("expected a hint pointing at dependency install, got: %s", stderr)
+	}
+}
+
+// TestJobRecordSaysWhetherPreparedAudioWasUploaded covers preprocessing that
+// was asked for but did not run, because ffmpeg is missing, and preprocessing
+// that ran: only the second uploads prepared audio.
+func TestJobRecordSaysWhetherPreparedAudioWasUploaded(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		prepared bool
+	}{{"ffmpeg missing", false}, {"trimmed", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := newTranscribeServer(t, transcribeResponseJSON)
+			cacheDir := t.TempDir()
+			audioPath := writeAudio(t, t.TempDir(), "interview.m4a", "fake audio content")
+			var root *cobra.Command
+			var errOut *bytes.Buffer
+			if tc.prepared {
+				root, _, errOut = newTestCLIWithMedia(t, cacheDir, server.URL, &fakeMedia{t: t, sourceDuration: "60", silences: "lavfi.silence_start=5\nlavfi.silence_end=40\n"})
+			} else {
+				root, _, errOut = newTestCLIWithRunner(t, cacheDir, server.URL, stubRunner("", errFFmpegMissing))
+			}
+			root.SetArgs([]string{"transcript", "create", audioPath, "--api-key", "test-key", "--trim-mode", "silence"})
+			if err := root.Execute(); err != nil {
+				t.Fatalf("transcript create failed: %v\n%s", err, errOut)
+			}
+			records, err := deepgram.ListJobRecords(cacheDir)
+			if err != nil || len(records) != 1 || records[0].Preprocessed != tc.prepared {
+				t.Fatalf("records %+v, error %v", records, err)
+			}
+		})
+	}
+}
+
+// TestCostEstimateCountsEveryUploadedChannel covers a stereo recording
+// uploaded as it is, because trimming found nothing to cut and merging is
+// off: Deepgram bills the processed duration of both channels, although its
+// response reports one, and a cache hit estimates the same.
+func TestCostEstimateCountsEveryUploadedChannel(t *testing.T) {
+	server := newTranscribeServer(t, transcribeResponseJSON)
+	cacheDir := t.TempDir()
+	audioPath := writeAudio(t, t.TempDir(), "interview.m4a", "fake stereo audio")
+	want, _ := deepgram.EstimateCostUSD(5.2, 2, deepgram.Options{Model: defaultModel, Terms: terms.DefaultTechTerms()})
+	for _, cacheHit := range []bool{false, true} {
+		root, out, errOut := newTestCLIWithMedia(t, cacheDir, server.URL, &fakeMedia{t: t, sourceDuration: "5.2", channels: 2})
+		root.SetArgs([]string{"transcript", "create", audioPath, "--api-key", "test-key", "--no-mono", "--trim-mode", "silence", "--format", "json"})
+		if err := root.Execute(); err != nil {
+			t.Fatalf("transcript create failed: %v\n%s", err, errOut)
+		}
+		var doc struct {
+			CacheHit bool     `json:"cache_hit"`
+			Cost     *float64 `json:"cost_estimate_usd"`
+		}
+		if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+			t.Fatal(err)
+		}
+		if doc.CacheHit != cacheHit || doc.Cost == nil || *doc.Cost != want {
+			t.Fatalf("cache hit %t: document %+v, want cost %v", cacheHit, doc, want)
+		}
+	}
+}
+
+func TestPrepareUploadLeavesMonoAudioAlone(t *testing.T) {
+	media := &fakeMedia{t: t, sourceDuration: "10"}
+	run, _, stderr := newPrepareRun(t, media, monoOnly())
+	cleanup, err := run.prepareUpload()
+	cleanup()
+	if err != nil || run.uploadPath != run.audioPath || media.prepared != "" || run.uploadChannels != 1 ||
+		!strings.Contains(stderr.String(), "The recording has one channel already; uploading original audio.") {
+		t.Fatalf("error %v upload %s prepared %q: %s", err, run.uploadPath, media.prepared, stderr)
 	}
 }
 

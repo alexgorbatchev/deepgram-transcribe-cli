@@ -73,8 +73,9 @@ func (o *transcriptOptions) diarizeModel() string {
 	return deepgram.DiarizeModelLatest
 }
 
-// wantsMono reports whether stereo audio should be merged into one channel,
-// which halves what Deepgram bills for the recording.
+// wantsMono reports whether audio with several channels should be merged into
+// one. Deepgram bills the processed duration of every channel, so merging
+// stereo halves the bill.
 func (o *transcriptOptions) wantsMono() bool { return !o.noPreprocess && !o.noMono }
 
 // effectiveTrimMode returns how audio is trimmed before upload, which is not
@@ -239,6 +240,10 @@ type transcriptRun struct {
 	cost            string
 	costUSD         *float64
 	servedFromCache bool
+	// uploadChannels is the channel count of the audio uploaded, or for a
+	// cache hit the count recorded with the cached response; zero when it is
+	// not known.
+	uploadChannels int
 }
 
 func runTranscriptCreate(cmd *cobra.Command, g *globalOptions, opts *transcriptOptions, audioPath string) error {
@@ -432,6 +437,7 @@ func (r *transcriptRun) connect() error {
 func (r *transcriptRun) serveEnvelope(envelope *deepgram.JobRecordEnvelope) {
 	r.response = envelope.Response
 	r.servedFromCache = true
+	r.uploadChannels = envelope.Record.Channels
 
 	if envelope.Timeline != nil {
 		r.timeline = *envelope.Timeline
@@ -506,6 +512,7 @@ func (r *transcriptRun) prepareUpload() (func(), error) {
 		return noCleanup, nil
 	}
 	r.timeline.SourceDuration = source.Duration
+	r.uploadChannels = source.Channels
 	if source.Duration == 0 && !r.opts.wantsTrim() {
 		// Only trimming decodes the recording, and a mono merge without it
 		// cannot be shown to be shorter without a duration to compare.
@@ -533,7 +540,11 @@ func (r *transcriptRun) prepareUpload() (func(), error) {
 		return noCleanup, fmt.Errorf("preparing audio for upload: %w", err)
 	}
 	if prepared.Path == r.audioPath {
-		r.out.Status("Nothing worth cutting was found; uploading original audio.")
+		if r.opts.wantsTrim() {
+			r.out.Status("Nothing worth cutting was found; uploading original audio.")
+		} else {
+			r.out.Status("The recording has one channel already; uploading original audio.")
+		}
 		return noCleanup, nil
 	}
 
@@ -556,14 +567,17 @@ func (r *transcriptRun) prepareUpload() (func(), error) {
 		}
 		processed = measured.Duration
 	}
-	if processed >= original {
+	// Deepgram bills the processed duration of every channel.
+	if processed*float64(prepared.Channels) >= original*float64(source.Channels) {
 		cleanup()
-		r.out.Status("Processed audio is %.3f s, original is %.3f s; uploading original audio because processing did not shorten it.", processed, original)
+		r.out.Status("Processed audio is %.3f s in %s, original is %.3f s in %s; uploading original audio because processing did not lower the billed duration.",
+			processed, formatChannels(prepared.Channels), original, formatChannels(source.Channels))
 		return noCleanup, nil
 	}
-	r.out.Status("Audio duration is %.3f s, down from %.3f s.", processed, original)
+	r.out.Status("Audio is %.3f s in %s, down from %.3f s in %s.", processed, formatChannels(prepared.Channels), original, formatChannels(source.Channels))
 	r.out.Detail("kept_ranges: %d", len(prepared.Kept))
 	r.uploadPath = prepared.Path
+	r.uploadChannels = prepared.Channels
 	r.timeline.Kept = prepared.Kept
 
 	if info, err := os.Stat(prepared.Path); err == nil {
@@ -651,14 +665,12 @@ func (r *transcriptRun) uploadBytes() ([]byte, error) {
 func (r *transcriptRun) recordJob() {
 	duration := r.response.Metadata.Duration
 
-	// Deepgram reports how many channels it actually processed. Older saved
-	// responses predate that field, so fall back to what was asked for.
-	channels := r.response.Metadata.Channels
+	// Deepgram bills the processed duration of every channel of the upload.
+	// Without ffprobe the upload's channels are unknown, so Deepgram's own
+	// count stands in, then one channel for responses that predate it.
+	channels := r.uploadChannels
 	if channels < 1 {
-		channels = 2
-		if r.opts.wantsMono() {
-			channels = 1
-		}
+		channels = max(r.response.Metadata.Channels, 1)
 	}
 
 	r.cost = deepgram.CalculateCostWithOptions(duration, channels, r.answered)
@@ -687,7 +699,7 @@ func (r *transcriptRun) recordJob() {
 		Model:           r.opts.model,
 		Language:        r.request.Language,
 		DiarizeModel:    r.request.DiarizeModel,
-		Preprocessed:    r.opts.wantsMono() || r.opts.wantsTrim(),
+		Preprocessed:    r.uploadPath != r.audioPath,
 		Terms:           r.keyTerms,
 		CostUSD:         r.cost,
 		CostIsActual:    false,
@@ -780,4 +792,12 @@ func formatTermsSummary(termList []string) string {
 	}
 
 	return strings.Join(sorted, ", ")
+}
+
+// formatChannels names a channel count, such as "1 channel" or "2 channels".
+func formatChannels(count int) string {
+	if count == 1 {
+		return "1 channel"
+	}
+	return fmt.Sprintf("%d channels", count)
 }

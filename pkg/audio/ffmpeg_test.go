@@ -364,23 +364,84 @@ func TestPreprocessAudioReportsNoSpeech(t *testing.T) {
 }
 
 func TestPreprocessAudioKeepsUncutAudio(t *testing.T) {
-	for _, mono := range []bool{false, true} {
-		fake := &fakeFFmpeg{t: t, decoded: countingPCM(3000, 1)}
-		source := StreamInfo{Duration: 3, SampleRate: 1000, Channels: 1}
-		got, cleanup, err := PreprocessAudio(t.Context(), "talk.wav", source, fake.options(PreprocessOptions{Mono: mono, Trim: TrimSilence}))
-		if err != nil || got.Kept != nil {
-			t.Fatalf("got %+v, error %v", got, err)
-		}
-		if (got.Path == "talk.wav") == mono {
-			t.Fatalf("mono %t: unexpected upload %s", mono, got.Path)
-		}
-		if got.SourceDuration != 3 || (mono && got.Duration != 3) {
-			t.Fatalf("mono %t: durations %v and %v, want the decoded 3 s", mono, got.SourceDuration, got.Duration)
-		}
-		encode := strings.Fields(fake.call("-i pipe:0"))
-		workDir := filepath.Dir(encode[len(encode)-1])
+	for _, tc := range []struct {
+		name     string
+		mono     bool
+		channels int
+		merges   bool
+	}{
+		{"stereo kept as it is", false, 2, false},
+		{"mono asked of mono audio", true, 1, false},
+		{"stereo merged", true, 2, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			t.Setenv("TMPDIR", tempDir)
+			decodedChannels := tc.channels
+			if tc.mono {
+				decodedChannels = 1
+			}
+			fake := &fakeFFmpeg{t: t, decoded: countingPCM(3000, decodedChannels)}
+			source := StreamInfo{Duration: 3, SampleRate: 1000, Channels: tc.channels}
+			got, cleanup, err := PreprocessAudio(t.Context(), "talk.wav", source, fake.options(PreprocessOptions{Mono: tc.mono, Trim: TrimSilence}))
+			if err != nil || got.Kept != nil || got.SourceDuration != 3 {
+				t.Fatalf("got %+v, error %v", got, err)
+			}
+			if !tc.merges {
+				// Nothing is encoded only to be discarded: the decode only
+				// measures the recording.
+				if got.Path != "talk.wav" || got.Channels != 0 || len(fake.calls) != 2 || fake.workFiles != nil {
+					t.Fatalf("got %+v after calls %v", got, fake.calls)
+				}
+			} else if got.Path == "talk.wav" || got.Duration != 3 || got.Channels != 1 {
+				t.Fatalf("got %+v, want the whole recording merged to one channel", got)
+			}
+			cleanup()
+			if left, _ := os.ReadDir(tempDir); len(left) != 0 {
+				t.Fatalf("temporary files remain: %v", left)
+			}
+		})
+	}
+}
+
+// TestPreprocessAudioCutsTheTailAfterMeasuring covers one range from the
+// start that ends before the recording does: the measuring decode finds the
+// tail, so the recording is decoded again and cut.
+func TestPreprocessAudioCutsTheTailAfterMeasuring(t *testing.T) {
+	fake := &fakeFFmpeg{t: t, decoded: countingPCM(6000, 2), silences: "lavfi.silence_start=4\n"}
+	source := StreamInfo{SampleRate: 1000, Channels: 2}
+	got, cleanup, err := PreprocessAudio(t.Context(), "talk.wav", source, fake.options(PreprocessOptions{Trim: TrimSilence}))
+	defer cleanup()
+	if err != nil || !reflect.DeepEqual(got.Kept, []timeline.Range{{Start: 0, End: 4}}) || got.SourceDuration != 6 || got.Duration != 4 || got.Channels != 2 {
+		t.Fatalf("got %+v, error %v", got, err)
+	}
+	if len(fake.calls) != 4 {
+		t.Fatalf("calls %v, want silence detection, two decodes and an encode", fake.calls)
+	}
+}
+
+func TestPreprocessAudioSkipsMergingMonoAudio(t *testing.T) {
+	fake := &fakeFFmpeg{t: t}
+	got, cleanup, err := PreprocessAudio(t.Context(), "talk.wav", StreamInfo{SampleRate: 1000, Channels: 1}, fake.options(PreprocessOptions{Mono: true}))
+	cleanup()
+	if err != nil || got.Path != "talk.wav" || len(fake.calls) != 0 {
+		t.Fatalf("got %+v, error %v, calls %v", got, err, fake.calls)
+	}
+}
+
+func TestPreprocessAudioReportsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	killed := func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("signal: killed") }
+	for _, trim := range []TrimMode{TrimNone, TrimSilence} {
+		_, cleanup, err := PreprocessAudio(ctx, "talk.wav", StreamInfo{SampleRate: 1000, Channels: 2}, PreprocessOptions{Mono: true, Trim: trim, Runner: killed})
 		cleanup()
-		assertRemoved(t, workDir)
+		if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "signal: killed") {
+			t.Fatalf("trim %s: got %v", trim, err)
+		}
+	}
+	if _, err := Probe(ctx, "talk.wav", killed); !errors.Is(err, context.Canceled) {
+		t.Fatalf("probe: got %v", err)
 	}
 }
 
@@ -399,7 +460,7 @@ func TestPreprocessAudioCleansUpAfterFailure(t *testing.T) {
 			tempDir := t.TempDir()
 			t.Setenv("TMPDIR", tempDir)
 			fake := &fakeFFmpeg{t: t, failStep: tc.failStep, decoded: countingPCM(3000, 1), silences: "lavfi.silence_start=1\nlavfi.silence_end=2\n"}
-			source := StreamInfo{Duration: 3, SampleRate: 1000, Channels: 1}
+			source := StreamInfo{Duration: 3, SampleRate: 1000, Channels: 2}
 			got, cleanup, err := PreprocessAudio(t.Context(), "talk.wav", source, fake.options(PreprocessOptions{Mono: true, Trim: tc.trim}))
 			cleanup()
 			if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "ffmpeg diagnostic") || got.Path != "" {

@@ -3,6 +3,7 @@ package audio
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -26,7 +27,7 @@ func DefaultStreamRunner(ctx context.Context, stdin io.Reader, stdout io.Writer,
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return fmt.Errorf("%w: %w", ctxErr, err)
+			return withCancellation(ctxErr, err)
 		}
 		if diagnostics := godeps.SanitizeStderr(stderr.String()); diagnostics != "" {
 			return fmt.Errorf("%w: %s", err, diagnostics)
@@ -34,6 +35,26 @@ func DefaultStreamRunner(ctx context.Context, stdin io.Reader, stdout io.Writer,
 		return err
 	}
 	return nil
+}
+
+// run runs a program whose output is captured. exec reports a program killed
+// because ctx ended as "signal: killed", so the error then carries ctx's error
+// too and cancellation stays recognizable.
+func run(ctx context.Context, runner godeps.CommandRunner, name string, args ...string) ([]byte, error) {
+	output, err := runner(ctx, name, args...)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return output, withCancellation(ctxErr, err)
+		}
+	}
+	return output, err
+}
+
+func withCancellation(ctxErr, err error) error {
+	if errors.Is(err, ctxErr) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ctxErr, err)
 }
 
 // spanFilter receives decoded interleaved PCM and passes on only the bytes

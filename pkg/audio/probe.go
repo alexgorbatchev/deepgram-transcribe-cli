@@ -27,7 +27,7 @@ func Probe(ctx context.Context, path string, runner godeps.CommandRunner) (Strea
 	if runner == nil {
 		runner = godeps.DefaultRunner
 	}
-	output, err := runner(ctx, "ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=duration,sample_rate,channels:format=duration", "-of", "json", "-i", path)
+	output, err := run(ctx, runner, "ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=duration,sample_rate,channels:format=duration", "-of", "json", "-i", path)
 	if err != nil {
 		return StreamInfo{}, fmt.Errorf("probing audio stream: %w", err)
 	}

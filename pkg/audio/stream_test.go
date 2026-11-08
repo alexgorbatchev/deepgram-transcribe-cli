@@ -68,6 +68,16 @@ func TestDefaultStreamRunnerReportsCancellation(t *testing.T) {
 	}
 }
 
+func TestRunKeepsACancellationItAlreadyReports(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	runner := func(ctx context.Context, _ string, _ ...string) ([]byte, error) { return []byte("partial"), ctx.Err() }
+	output, err := run(ctx, runner, "ffprobe")
+	if string(output) != "partial" || !errors.Is(err, context.Canceled) || strings.Count(err.Error(), "canceled") != 1 {
+		t.Fatalf("output %q, error %v", output, err)
+	}
+}
+
 func TestSpanFilterPassesOnOnlyItsSpans(t *testing.T) {
 	pcm := countingPCM(20, 2)
 	var out bytes.Buffer

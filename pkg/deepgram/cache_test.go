@@ -57,6 +57,19 @@ func TestCacheKey(t *testing.T) {
 	if key1 == CacheKey(audio1, opts1, "mono=true;trim=none") {
 		t.Errorf("expected different keys for different preparation, got same %s", key1)
 	}
+	// Fields cannot run into each other.
+	if CacheKey(audio1, Options{Model: "nova-3", Language: "en"}, "") == CacheKey(audio1, Options{Model: "nova-3e", Language: "n"}, "") {
+		t.Error("model and language that join to the same text share a key")
+	}
+	if CacheKey(audio1, Options{Terms: []string{"ab"}}, "") == CacheKey(audio1, Options{Terms: []string{"a", "b"}}, "") {
+		t.Error("terms that join to the same text share a key")
+	}
+	if CacheKey([]byte("audio"), opts1, "x") == CacheKey([]byte("audiox"), opts1, "") {
+		t.Error("audio and preparation that join to the same bytes share a key")
+	}
+	if CacheKey(audio1, Options{Terms: []string{"Go", " Kubernetes "}}, "") != CacheKey(audio1, Options{Terms: []string{"Kubernetes", "Go"}}, "") {
+		t.Error("term order or surrounding whitespace changed the key")
+	}
 }
 
 func TestSourceAudioKey(t *testing.T) {

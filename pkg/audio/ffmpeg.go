@@ -92,6 +92,9 @@ type Prepared struct {
 	// which is the case for a downmix without trimming.
 	SourceDuration float64
 	Duration       float64
+	// Channels is Path's channel count when it is prepared audio, and zero
+	// when Path is the input.
+	Channels int
 }
 
 // PreprocessAudio prepares audio for upload: it merges channels when Mono is
@@ -164,7 +167,12 @@ type preparation struct {
 
 func (p *preparation) run() (Prepared, error) {
 	unchanged := Prepared{Path: p.input}
+	// A recording that is already mono has nothing to merge.
+	downmixes := p.opts.Mono && p.source.Channels != 1
 	if !p.opts.Trim.Cuts() {
+		if !downmixes {
+			return unchanged, nil
+		}
 		return p.downmix()
 	}
 
@@ -180,6 +188,21 @@ func (p *preparation) run() (Prepared, error) {
 	rate := p.source.SampleRate
 
 	spans := toSampleSpans(ranges, p.opts.Padding, rate, unboundedSamples)
+	if !downmixes && len(spans) == 1 && spans[0].start == 0 {
+		// One span from the start keeps the whole recording unless the
+		// recording runs past it, and a whole recording that is not merged
+		// is uploaded as it is. Measuring first avoids encoding audio only
+		// to discard it, at the cost of decoding twice when the tail is cut.
+		totalSamples, err := p.cut(nil, channels)
+		if err != nil {
+			return Prepared{}, err
+		}
+		if spans[0].end >= totalSamples {
+			unchanged.SourceDuration = samplesToSeconds(totalSamples, rate)
+			return unchanged, nil
+		}
+	}
+
 	totalSamples, err := p.cut(spans, channels)
 	if err != nil {
 		return Prepared{}, err
@@ -192,11 +215,11 @@ func (p *preparation) run() (Prepared, error) {
 		return unchanged, ErrNoSpeech
 	}
 	if len(spans) == 1 && spans[0].start == 0 && spans[0].end == totalSamples {
-		if !p.opts.Mono {
+		if !downmixes {
 			return unchanged, nil
 		}
 		// Everything was kept, so the prepared audio is a plain downmix.
-		return Prepared{Path: p.output, SourceDuration: measured, Duration: measured}, nil
+		return Prepared{Path: p.output, SourceDuration: measured, Duration: measured, Channels: 1}, nil
 	}
 
 	var keptSamples int64
@@ -208,6 +231,7 @@ func (p *preparation) run() (Prepared, error) {
 		Kept:           spansToRanges(spans, rate),
 		SourceDuration: measured,
 		Duration:       samplesToSeconds(keptSamples, rate),
+		Channels:       channels,
 	}, nil
 }
 
@@ -277,7 +301,7 @@ func (p *preparation) downmix() (Prepared, error) {
 	if err := p.ffmpeg("downmixing audio", args...); err != nil {
 		return Prepared{}, err
 	}
-	return Prepared{Path: p.output}, nil
+	return Prepared{Path: p.output, Channels: 1}, nil
 }
 
 // detect returns the ranges of the input, in seconds, that the trim mode
@@ -303,7 +327,7 @@ func (p *preparation) detectSound() ([]timeline.Range, error) {
 
 	filter := fmt.Sprintf("silencedetect=noise=%s:d=%s,ametadata=mode=print:file=-", threshold, duration)
 	args := []string{"-nostdin", "-v", "error", "-i", p.input, "-map", "0:a:0", "-af", filter, "-f", "null", "-"}
-	output, err := p.runner(p.ctx, "ffmpeg", args...)
+	output, err := run(p.ctx, p.runner, "ffmpeg", args...)
 	if err != nil {
 		return nil, fmt.Errorf("ffmpeg silence detection failed: %w (output: %s)", err, strings.TrimSpace(string(output)))
 	}
@@ -355,7 +379,7 @@ func (p *preparation) decodeArgs(channels, sampleRate int) []string {
 }
 
 func (p *preparation) ffmpeg(step string, args ...string) error {
-	output, err := p.runner(p.ctx, "ffmpeg", args...)
+	output, err := run(p.ctx, p.runner, "ffmpeg", args...)
 	if err != nil {
 		return fmt.Errorf("ffmpeg %s failed: %w (output: %s)", step, err, strings.TrimSpace(string(output)))
 	}

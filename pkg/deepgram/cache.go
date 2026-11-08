@@ -2,12 +2,14 @@ package deepgram
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/timeline"
@@ -39,27 +41,35 @@ func SourceAudioKey(audioData []byte) string {
 // request options and preparation, which describes how the audio was prepared
 // before upload (see audio.PreprocessOptions.Fingerprint): trimming changes
 // what Deepgram hears, so it changes the response.
+//
+// Every field is hashed with its length in front of it, so no two different
+// requests can hash the same bytes, as "nova-3" with language "en" and
+// "nova-3e" with language "n" would if they were simply joined.
 func CacheKey(audioData []byte, opts Options, preparation string) string {
 	h := sha256.New()
-	h.Write(audioData)
-	h.Write([]byte(":preparation=" + preparation))
-	h.Write([]byte(opts.Model))
-	h.Write([]byte(opts.Language))
-
-	if opts.Diarized() {
-		h.Write([]byte(":diarize_model=" + opts.DiarizeModel))
-	}
-	if opts.SmartFormatting {
-		h.Write([]byte(":smart_format"))
+	field := func(value []byte) {
+		var length [8]byte
+		binary.BigEndian.PutUint64(length[:], uint64(len(value)))
+		h.Write(length[:])
+		h.Write(value)
 	}
 
-	// Sort terms for deterministic hashing regardless of slice order
-	sortedTerms := make([]string, len(opts.Terms))
-	copy(sortedTerms, opts.Terms)
-	sort.Strings(sortedTerms)
+	field(audioData)
+	field([]byte(preparation))
+	field([]byte(opts.Model))
+	field([]byte(opts.Language))
+	field([]byte(opts.DiarizeModel))
+	field([]byte(strconv.FormatBool(opts.SmartFormatting)))
 
-	for _, term := range sortedTerms {
-		h.Write([]byte(":" + strings.TrimSpace(term)))
+	// Sorted, so the order terms were given in does not matter.
+	terms := make([]string, len(opts.Terms))
+	for i, term := range opts.Terms {
+		terms[i] = strings.TrimSpace(term)
+	}
+	sort.Strings(terms)
+	field([]byte(strconv.Itoa(len(terms))))
+	for _, term := range terms {
+		field([]byte(term))
 	}
 
 	return hex.EncodeToString(h.Sum(nil))
