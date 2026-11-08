@@ -30,7 +30,7 @@ update-deps:
 
 # Check formatting and run static analysis
 lint:
-    gofmt -l .
+    @unformatted="$(gofmt -l .)"; if [ -n "$unformatted" ]; then echo "gofmt would reformat:"; echo "$unformatted"; exit 1; fi
     go vet ./...
     golangci-lint run
 
