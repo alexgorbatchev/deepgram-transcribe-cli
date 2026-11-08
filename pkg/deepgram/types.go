@@ -1,6 +1,10 @@
 package deepgram
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/timeline"
+)
 
 // DiarizeModelLatest selects the newest generally available batch diarizer,
 // which Deepgram currently resolves to v2. Deepgram documents `diarize_model`
@@ -108,4 +112,45 @@ type Word struct {
 	Speaker           int     `json:"speaker"`
 	SpeakerConfidence float64 `json:"speaker_confidence"`
 	PunctuatedWord    string  `json:"punctuated_word"`
+}
+
+// OnTimeline returns a copy of the response with every word and utterance time
+// mapped from the uploaded audio to the original recording. Words use
+// timeline.Span, so a word never covers removed audio; an utterance keeps its
+// own start and end, so it covers the gaps between the ranges it spans.
+// Metadata.Duration stays the length of the uploaded audio, which is what
+// Deepgram bills.
+func (r PreRecordedResponse) OnTimeline(tl timeline.Timeline) PreRecordedResponse {
+	mapped := r
+	mapped.Results.Channels = make([]Channel, len(r.Results.Channels))
+	for i, channel := range r.Results.Channels {
+		alternatives := make([]Alternative, len(channel.Alternatives))
+		for j, alternative := range channel.Alternatives {
+			alternative.Words = wordsOnTimeline(alternative.Words, tl)
+			alternatives[j] = alternative
+		}
+		mapped.Results.Channels[i] = Channel{Alternatives: alternatives}
+	}
+
+	mapped.Results.Utterances = make([]Utterance, len(r.Results.Utterances))
+	for i, utterance := range r.Results.Utterances {
+		utterance.Start = tl.Start(utterance.Start)
+		utterance.End = tl.End(utterance.End)
+		utterance.Words = wordsOnTimeline(utterance.Words, tl)
+		mapped.Results.Utterances[i] = utterance
+	}
+
+	return mapped
+}
+
+func wordsOnTimeline(words []Word, tl timeline.Timeline) []Word {
+	if words == nil {
+		return nil
+	}
+	mapped := make([]Word, len(words))
+	for i, word := range words {
+		word.Start, word.End = tl.Span(word.Start, word.End)
+		mapped[i] = word
+	}
+	return mapped
 }

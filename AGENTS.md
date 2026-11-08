@@ -1,6 +1,6 @@
 # deepgram-transcribe-cli Agent Guidelines
 
-Workspace for `deepgram-transcribe-cli` — a Go CLI utility (`deepgram-transcribe`) that transcribes any audio containing speech into Markdown, with speaker diarization, custom keyterm boosting, a local Deepgram response cache and spending history.
+Workspace for `deepgram-transcribe-cli` — a Go CLI utility (`deepgram-transcribe`) that transcribes any audio containing speech into Markdown or versioned JSON on the original recording's timeline, with speaker diarization, speech-model trimming, custom keyterm boosting, a local Deepgram response cache and spending history.
 
 ## Repository & GitHub Releases
 - Public GitHub Repository: [`github.com/alexgorbatchev/deepgram-transcribe-cli`](https://github.com/alexgorbatchev/deepgram-transcribe-cli)
@@ -33,7 +33,9 @@ Workspace for `deepgram-transcribe-cli` — a Go CLI utility (`deepgram-transcri
 - `internal/cliout/`: the dual-mode output layer (`AGENT=1`), covering statuses, fields, tables, rules and hinted errors.
 - `internal/deps/`: `ffmpeg` and `ffprobe`, declared for `godeps` with minimum versions, the shared ffmpeg package installation strategy and managed PATH setup.
 - `pkg/deepgram/`: Deepgram API client (`Client`), URL builder, options, local SHA-256 response store (`cache.go`), job history (`job.go`) and response models (`types.go`).
-- `pkg/audio/`: `ffmpeg` preprocessing (`PreprocessAudio`) for stereo-to-mono downmixing and silence trimming, plus MIME detection.
+- `pkg/audio/`: `ffprobe` stream details (`Probe`), `ffmpeg` preprocessing (`PreprocessAudio`) for stereo-to-mono downmixing and trimming, plus MIME detection. Trimming finds kept ranges with the pure-Go Silero VAD (`github.com/zserge/govad`, `vad.go`) or ffmpeg `silencedetect` (`trim.go`), then cuts decoded PCM by sample so the kept ranges are exact.
+- `pkg/timeline/`: maps times on trimmed audio back to the original recording (`Timeline`).
+- `pkg/transcriptjson/`: the `--format json` document (`Format`, `SchemaVersion`).
 - `pkg/terms/`: built-in engineering keyterms (`DefaultTechTerms`), custom keyterm parsing and file loading.
 - `pkg/markdown/`: transcript formatter (`Format`) with speaker turn grouping and a metadata table.
 - `skills/deepgram-transcribe/SKILL.md`: the agent skill, the operating reference installed with `npx skills add alexgorbatchev/deepgram-transcribe-cli --skill deepgram-transcribe`. `deepgram-transcribe skill` prints only that install command and the skill URL, which `cobra-help-tree` generates from `skillSource`; the binary never embeds the skill.
@@ -52,7 +54,7 @@ Commands follow a subject-verb hierarchy, at most three levels deep:
 1. **NO LIVE API CALLS IN TESTS**: Unit tests MUST mock the Deepgram API via `httptest.NewServer`. Tests must never consume live Deepgram credits or make external network calls.
    Likewise, tests MUST inject a stub `godeps.CommandRunner` rather than run real external programs, and MUST NOT exercise `dependency install` or `dependency update` down to a branch that actually installs, because `godeps.SystemPackageManager` shells out to `brew`, `apt-get` and friends with a runner that cannot be replaced from outside that library.
    Pass the runner through `audio.PreprocessOptions.Runner` for preprocessing tests. When testing invalid arguments on install/update before validation exists, replace the command's RunE with a test handler so the red phase cannot reach the package manager.
-2. **HIGH FUNCTION COVERAGE**: Maintain statement and function coverage across all domain packages (`internal/cliout`, `pkg/deepgram`, `pkg/audio`, `pkg/terms`, `pkg/markdown`).
+2. **HIGH FUNCTION COVERAGE**: Maintain statement and function coverage across all domain packages (`internal/cliout`, `pkg/deepgram`, `pkg/audio`, `pkg/terms`, `pkg/markdown`, `pkg/timeline`, `pkg/transcriptjson`).
 3. **NO BINARIES IN GIT**: Compiled binaries (`bin/`) MUST be excluded via `.gitignore` and never committed to the repository.
 4. **DUAL-MODE OUTPUT**: Every new output path MUST go through `internal/cliout` so that `AGENT=1` stays token-conservative. Never print tables, rules or padding directly.
 5. **SUBJECT-VERB COMMANDS**: Domain commands MUST nest a verb under a subject; the top-level `skill` command is the metadata exception. Help screens MUST stay on `cobra-help-tree`. A new command that takes a positional argument MUST describe it in `helpCatalog`, since Cobra has no field for that and `Use` alone leaves a reader guessing what the placeholder accepts. Commands without positional arguments MUST use `cobra.NoArgs`.
@@ -64,3 +66,6 @@ Commands follow a subject-verb hierarchy, at most three levels deep:
 10. **TESTING**: Change a corresponding test whenever runtime behavior changes; develop red/green and verify regressions by temporarily disabling the implementation. Maintain at least 90% statement coverage across domain packages.
 11. **PUBLICATION**: Publish releases, tags, packages or deployments only with explicit user authorization.
 12. **CACHE-HIT HISTORY**: Serving an existing response must preserve its original job record and billed cost, including source-content hits under different options. History-only envelopes must not decode as empty transcripts. Cover repeated cache hits, not just the first run.
+13. **ORIGINAL TIMELINE**: Every time written in any output format MUST be on the original recording's timeline: map responses with `PreRecordedResponse.OnTimeline` before formatting, and store the upload's `timeline.Timeline` with every cached response so a cache hit maps exactly like the original run. Keep trimming exact by construction (cut decoded samples); never derive kept ranges from a filter that does not report what it removed.
+14. **JSON SCHEMA**: Document every `transcriptjson.Document` field in the README and the skill. Increment `SchemaVersion` when a field is removed, renamed or changes meaning; adding a field does not change it. A cache hit and a cache miss MUST produce the same document apart from `cache_hit`.
+15. **STATIC RELEASES**: Release builds use `CGO_ENABLED=0` for six OS/architecture pairs. Dependencies MUST build that way; voice detection therefore uses pure-Go inference rather than ONNX Runtime bindings.

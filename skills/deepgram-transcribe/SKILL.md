@@ -4,7 +4,7 @@ description: Use when operating deepgram-transcribe to transcribe audio, inspect
 author: alexgorbatchev
 metadata:
   created_on: 2026-10-01 21:03
-  last_modified: 2026-11-01 12:30
+  last_modified: 2026-11-07 21:38
   status: current
 ---
 
@@ -17,6 +17,8 @@ this skill and the URL where it is published.
 export DEEPGRAM_API_KEY="your-deepgram-api-key"
 deepgram-transcribe transcript create interview.opus > interview.md
 deepgram-transcribe transcript create interview.m4a -t Envoy -t 'Alex,Harvey' -o notes.md
+deepgram-transcribe transcript create session.opus --format json > session.json
+deepgram-transcribe transcript create session.opus --trim-mode silence --silence-threshold=-35dB
 deepgram-transcribe job list --limit 10
 deepgram-transcribe job inspect interview.m4a
 deepgram-transcribe cache status
@@ -25,23 +27,51 @@ deepgram-transcribe dependency list
 
 Use `--force` to request a fresh, billable transcription with changed options.
 Use `--no-cache` to bypass cached responses and leave response/history storage untouched.
-Use `--no-preprocess` to upload the original audio. Use `--no-mono` or
-`--no-trim-silence` to select which processing steps run.
+Use `--no-preprocess` to upload the original audio. Use `--no-mono` to keep
+channels and `--trim-mode none` to upload the whole recording.
 
 ## Output, environment and errors
 
-- Transcription outputs Markdown with a metadata table and timestamped speaker turns, identically in both modes. `--output` writes that result to a file, creates parent directories and overwrites an existing file.
+- Transcription outputs Markdown with a metadata table and timestamped speaker turns, or with `--format json` the JSON document described below, identically in both modes. `--output` writes that result to a file, creates parent directories and overwrites an existing file.
+- Every time in Markdown and JSON is in seconds on the original recording's timeline, even when trimming cut parts of the upload. A word that straddles a cut is placed in the kept range holding most of it and clipped to that range; an utterance keeps its own start and end and can span removed audio. The Markdown metadata shows the original `Duration` and, when trimming shortened the upload, the `Transcribed` duration.
+- Trimming: `--trim-mode vad` (default) runs the Silero VAD speech model, built into the binary, over a 16 kHz mono decode; a 32 ms frame is speech at or above `--vad-threshold`, speech ends after `--vad-min-silence` seconds below the threshold minus 0.15, and speech shorter than `--vad-min-speech` is dropped. It runs about 50 times faster than real time on one core. `--trim-mode silence` keeps everything outside ffmpeg `silencedetect` silences of at least `--silence-duration` below `--silence-threshold`. Both widen each kept range by `--trim-padding` on each side, merge overlaps, decode to raw samples, join the kept sample ranges and re-encode in the input's container, so `kept_ranges` is exact. `--vad-*` flags fail unless the mode is `vad`, `--silence-*` flags fail unless it is `silence`, and `--trim-padding` fails with `none`. `--no-preprocess` disables trimming whatever the mode. When nothing is worth keeping, a warning is printed and the original audio is uploaded.
 - Progress, confirmations, warnings and errors go to stderr. Explicit help and `skill` go to stdout. Syntax-error usage goes to stderr. Success exits 0; a command error exits 1.
 - `AGENT=1`, `true` or `yes` selects compact output; matching ignores case and surrounding whitespace. Other values select human output. Listings use TSV, details use `key: value` lines, and diagnostics use `INFO:`, `WARN:`, `OK:`, `ERR:` or `HINT:`. Human output uses bordered tables, aligned fields and bracketed tags. Agent help begins with the skill-reading alert, retains full descriptions and lists every command. The human help tree omits the `skill` and `completion` commands, which still run.
 - `COLUMNS` accepts a positive integer for human help/output width. Otherwise terminal width is detected. Human help wraps to that width and is never truncated. When neither is available, human help stays unwrapped and human command output uses 100 columns. Agent help is always complete.
 - `DEEPGRAM_API_KEY` supplies credentials when `--api-key` is empty. A nonempty flag takes precedence. A cache hit works without credentials; a fresh request needs credentials. History commands query the management API for pending charges when credentials are available and save resolved charges locally.
 - An empty `--cache-dir` resolves to `$XDG_CACHE_HOME/deepgram-transcribe`, then `~/.cache/deepgram-transcribe`; if the home directory is unavailable, it uses `.cache/deepgram-transcribe` relative to the working directory.
 - `$XDG_DATA_HOME/deepgram-transcribe/bin` (or `~/.local/share/deepgram-transcribe/bin`) is prepended to this process's `PATH` for managed-program discovery. The `dependency install` and `dependency update` commands use the host package manager and can change packages outside that directory.
-- Preprocessing uses ffmpeg 4.4 or newer and creates temporary audio in the operating system's temporary directory (`os.TempDir()`; `TMPDIR` on Unix, `GetTempPath` on Windows). ffprobe measures the first audio stream's duration in both recordings. Upload prepared audio only when its duration is strictly shorter; equal, longer or unavailable durations select original audio and immediately remove the prepared file. This also applies to mono-only processing. Temporary audio is removed after success, command errors, or cancellation, including Ctrl-C and SIGTERM. Forced termination such as SIGKILL cannot run cleanup. Progress reports duration and byte comparisons; re-encoding can increase bytes despite shorter duration. Deepgram's response duration and channel count determine the estimated charge.
+- Preprocessing uses ffmpeg 4.4 or newer and creates temporary audio in the operating system's temporary directory (`os.TempDir()`; `TMPDIR` on Unix, `GetTempPath` on Windows). ffprobe measures the first audio stream's duration in both recordings. Upload prepared audio only when its duration is strictly shorter; equal, longer or unavailable durations select original audio and immediately remove the prepared file. This also applies to mono-only processing. Trimming also writes the decoded recording there as raw 16-bit samples, about 2 bytes per sample per channel, plus a 16 kHz mono copy in `vad` mode. Temporary audio is removed after success, command errors, or cancellation, including Ctrl-C and SIGTERM. Forced termination such as SIGKILL cannot run cleanup. Progress reports duration and byte comparisons; re-encoding can increase bytes despite shorter duration. Deepgram's response duration and channel count determine the estimated charge.
 - Missing or outdated ffmpeg or ffprobe emits a warning and uploads original audio. An error while processing with usable ffmpeg fails the command. Duration-probe errors warn and select original audio; cancellation fails the command. File-read, terms-file, API, and transcript-write errors fail the command. Cache/history write failures warn while allowing transcript delivery. Management-cost lookup failures leave charges pending, with details in agent mode.
+- Cached responses store the kept ranges they were transcribed with, so a cache hit maps times exactly as the original run and produces the same JSON apart from `cache_hit`. A preprocessed cached response with no kept ranges on record produces a warning that its times may be on the trimmed audio; use `--force` to replace it.
 - Cached results are matched by original audio contents, including requests with different options. A cached response can therefore retain an earlier model, vocabulary or speaker configuration. `--force` skips reads and updates storage; `--no-cache` skips both reads and writes. `cache clear` deletes responses and job history in the selected cache directory.
 - Serving a cached transcript preserves its original history and billed cost, including when requested options differ. History-only entries contain no reusable response and are ignored as transcript hits; lookup can still find another saved response for the same audio.
 - Uploads go to Deepgram's pre-recorded transcription API. Keyterms, model, language and formatting options are sent with the audio. A cancelled run cancels the in-flight request; a completed server-side transcription may already be billable.
+
+## JSON transcript (`--format json`, schema 1)
+
+One indented JSON object followed by a newline. Times are seconds on the original
+recording. `schema` changes only when a field is removed, renamed or changes meaning.
+
+| Field | Type | Meaning |
+| :--- | :--- | :--- |
+| `schema` | number | `1` |
+| `source.filename` | string | Base name of the input file |
+| `source.size_bytes` | number | Input file size |
+| `request_id` | string | Deepgram request ID |
+| `model` | string | Model requested (`nova-3` when `--model` is empty) |
+| `language` | string | `--language` value |
+| `diarized` | bool | Whether speaker labels were requested |
+| `duration` | number | Original recording length from ffprobe; Deepgram's duration when preprocessing did not measure it |
+| `transcribed_duration` | number | Duration Deepgram processed and bills |
+| `cache_hit` | bool | Served from the local cache |
+| `cost_estimate_usd` | number or null | List-price estimate; null for models without a published rate |
+| `kept_ranges` | array or null | `{start, end}` ranges of the original that were uploaded, in order; null when nothing was cut |
+| `transcript` | string | Full text of the first channel's best alternative |
+| `words[]` | array | `word`, `punctuated_word`, `start`, `end`, `confidence`, `speaker` (null when not diarized) |
+| `utterances[]` | array | `start`, `end`, `confidence`, `speaker` (null when not diarized), `transcript` |
+
+`words` and `utterances` are empty arrays, never null.
 
 ## Command and flag reference
 
@@ -116,16 +146,21 @@ Deepgram determines whether the actual audio is supported.
 | `--terms-file` | `` | `string` | `` | Additional keyterms, one per line; blank and comment lines are skipped |
 | `--model` | `-m` | `string` | `nova-3` | Model name passed to Deepgram; accepted names are determined by the API |
 | `--language` | `-l` | `string` | `en` | Language identifier passed to Deepgram; accepted identifiers are determined by the API |
-| `--output` | `-o` | `string` | `` | Empty means stdout; a path creates/overwrites a Markdown file |
+| `--output` | `-o` | `string` | `` | Empty means stdout; a path creates/overwrites the transcript file |
+| `--format` | `` | `string` | `markdown` | `markdown` or `json`; other values fail before any work |
 | `--force` | `-f` | `bool` | `false` | Bypass cache reads and request a billable transcription |
 | `--no-diarize` | `` | `bool` | `false` | Disable speaker labeling in the API request |
 | `--no-tech-terms` | `` | `bool` | `false` | Exclude built-in engineering keyterms |
 | `--no-cache` | `` | `bool` | `false` | Bypass cache reads and writes, including job history |
 | `--no-preprocess` | `` | `bool` | `false` | Disable both processing steps |
 | `--no-mono` | `` | `bool` | `false` | Retain channel count during preprocessing |
-| `--no-trim-silence` | `` | `bool` | `false` | Retain silence during preprocessing |
-| `--silence-threshold` | `` | `string` | `-30dB` | ffmpeg silence threshold; accepts ffmpeg amplitude or decibel syntax |
-| `--silence-duration` | `` | `string` | `2.0` | ffmpeg silence duration in seconds; ffmpeg validates its value |
+| `--trim-mode` | `` | `string` | `vad` | `vad`, `silence` or `none` (case-insensitive); other values fail |
+| `--trim-padding` | `` | `float64` | `0.3` | Seconds kept on each side of each kept range; negative fails; rejected with `--trim-mode none` |
+| `--vad-threshold` | `` | `float64` | `0.5` | Speech probability in (0, 1); `vad` mode only |
+| `--vad-min-speech` | `` | `float64` | `0.25` | Shortest kept speech in seconds; negative fails; `vad` mode only |
+| `--vad-min-silence` | `` | `float64` | `1` | Shortest cut pause in seconds; negative fails; `vad` mode only |
+| `--silence-threshold` | `` | `string` | `-30dB` | ffmpeg silencedetect noise level; accepts ffmpeg amplitude or decibel syntax; `silence` mode only |
+| `--silence-duration` | `` | `string` | `2.0` | ffmpeg silencedetect duration in seconds; ffmpeg validates its value; `silence` mode only |
 
 ### `deepgram-transcribe job`
 

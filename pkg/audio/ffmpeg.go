@@ -2,94 +2,251 @@ package audio
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/alexgorbatchev/godeps"
+
+	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/timeline"
 )
 
 const (
 	DefaultSilenceThreshold = "-30dB"
 	DefaultSilenceDuration  = "2.0"
+
+	// pcmBytesPerSample is the size of one signed 16-bit sample, the format
+	// audio is decoded to before it is measured and cut.
+	pcmBytesPerSample = 2
+	// defaultExtension names the prepared file when the input has none, which
+	// also tells ffmpeg which encoder to use.
+	defaultExtension = ".m4a"
 )
 
-// PreprocessOptions configures audio optimization parameters before API transmission.
+// ErrNoSpeech reports that trimming found nothing worth keeping.
+var ErrNoSpeech = errors.New("no speech was detected")
+
+// PreprocessOptions configures how audio is prepared before upload.
 type PreprocessOptions struct {
-	Mono             bool                 // Convert stereo audio to single channel (mono)
-	TrimSilence      bool                 // Remove long silent periods/dead air
-	SilenceThreshold string               // e.g. "-30dB"
-	SilenceDuration  string               // e.g. "2.0" (seconds)
+	Mono             bool                 // merge all channels into one
+	Trim             TrimMode             // how to find the audio worth keeping; empty means TrimNone
+	SilenceThreshold string               // TrimSilence: volume below which audio is silent, e.g. "-30dB"
+	SilenceDuration  string               // TrimSilence: shortest silence removed, in seconds, e.g. "2.0"
+	VAD              VADOptions           // TrimVAD: speech detection settings
+	Padding          float64              // seconds kept on each side of the audio worth keeping
 	Runner           godeps.CommandRunner // nil uses the real process runner
 }
 
-// BuildFFmpegArgs constructs command line arguments for ffmpeg audio processing.
-func BuildFFmpegArgs(inputPath, outputPath string, opts PreprocessOptions) []string {
-	args := []string{"-y", "-i", inputPath}
-
-	if opts.Mono {
-		args = append(args, "-ac", "1")
-	}
-
-	if opts.TrimSilence {
-		threshold := opts.SilenceThreshold
-		if threshold == "" {
-			threshold = DefaultSilenceThreshold
-		}
-		duration := opts.SilenceDuration
-		if duration == "" {
-			duration = DefaultSilenceDuration
-		}
-
-		filterStr := fmt.Sprintf("silenceremove=stop_periods=-1:stop_duration=%s:stop_threshold=%s", duration, threshold)
-		args = append(args, "-af", filterStr)
-	}
-
-	args = append(args, outputPath)
-	return args
+// Prepared is the result of preprocessing.
+type Prepared struct {
+	// Path is the audio to upload. It is the input path when nothing changed.
+	Path string
+	// Kept lists the ranges of the input, in seconds, that Path contains, end
+	// to end. It is empty when nothing was cut.
+	Kept []timeline.Range
 }
 
-// PreprocessAudio runs ffmpeg to optimize audio if Mono or TrimSilence options are requested.
-func PreprocessAudio(ctx context.Context, inputPath string, opts PreprocessOptions) (string, func(), error) {
+// PreprocessAudio prepares audio for upload: it merges channels when Mono is
+// set, and cuts what Trim finds not worth uploading.
+//
+// Cutting decodes the input to raw PCM, copies the kept sample ranges and
+// encodes the result, so the kept ranges are exact by construction. source
+// describes the input's audio stream, as Probe reports it.
+//
+// The returned function removes every temporary file and is safe to call more
+// than once.
+func PreprocessAudio(ctx context.Context, inputPath string, source StreamInfo, opts PreprocessOptions) (Prepared, func(), error) {
 	noCleanup := func() {}
+	unchanged := Prepared{Path: inputPath}
 
-	if !opts.Mono && !opts.TrimSilence {
-		return inputPath, noCleanup, nil
+	if !opts.Mono && !opts.Trim.Cuts() {
+		return unchanged, noCleanup, nil
 	}
 
-	ext := filepath.Ext(inputPath)
-	if ext == "" {
-		ext = ".m4a"
-	}
-
-	tmpFile, err := os.CreateTemp("", "transcribe-proc-*"+ext)
+	workDir, err := os.MkdirTemp("", "transcribe-proc-*")
 	if err != nil {
-		return "", noCleanup, fmt.Errorf("creating temp audio file: %w", err)
+		return Prepared{}, noCleanup, fmt.Errorf("creating temp audio directory: %w", err)
 	}
-	// The file is only needed as a reserved name: ffmpeg writes the audio itself,
-	// so it has to be closed before ffmpeg is started.
-	outputPath := tmpFile.Name()
 	cleanup := func() {
-		_ = os.Remove(outputPath) // Best-effort cleanup, including repeated calls.
-	}
-	if err := tmpFile.Close(); err != nil {
-		cleanup()
-		return "", noCleanup, fmt.Errorf("closing temp audio file %q: %w", outputPath, err)
+		_ = os.RemoveAll(workDir) // Best-effort cleanup, including repeated calls.
 	}
 
-	args := BuildFFmpegArgs(inputPath, outputPath, opts)
-	runner := opts.Runner
-	if runner == nil {
-		runner = godeps.DefaultRunner
+	p := preparation{
+		ctx:     ctx,
+		input:   inputPath,
+		source:  source,
+		opts:    opts,
+		workDir: workDir,
+		output:  filepath.Join(workDir, "audio"+outputExtension(inputPath)),
+		runner:  opts.Runner,
 	}
-	output, err := runner(ctx, "ffmpeg", args...)
+	if p.runner == nil {
+		p.runner = godeps.DefaultRunner
+	}
+
+	prepared, err := p.run()
+	if err != nil || prepared.Path == inputPath {
+		cleanup()
+		return prepared, noCleanup, err
+	}
+	return prepared, cleanup, nil
+}
+
+// preparation carries one PreprocessAudio call through its steps.
+type preparation struct {
+	ctx     context.Context
+	input   string
+	source  StreamInfo
+	opts    PreprocessOptions
+	workDir string
+	output  string
+	runner  godeps.CommandRunner
+}
+
+func (p *preparation) run() (Prepared, error) {
+	unchanged := Prepared{Path: p.input}
+	if !p.opts.Trim.Cuts() {
+		return p.downmix()
+	}
+
+	ranges, err := p.detect()
 	if err != nil {
-		cleanup()
-		return "", noCleanup, fmt.Errorf("ffmpeg audio preprocessing failed: %w (output: %s)", err, strings.TrimSpace(string(output)))
+		return Prepared{}, err
 	}
 
-	return outputPath, cleanup, nil
+	channels := p.source.Channels
+	if p.opts.Mono {
+		channels = 1
+	}
+	frameBytes := int64(channels * pcmBytesPerSample)
+
+	decoded := filepath.Join(p.workDir, "decoded.pcm")
+	if err := p.ffmpeg("decoding audio", p.decodeArgs(decoded, channels, p.source.SampleRate)...); err != nil {
+		return Prepared{}, err
+	}
+	info, err := os.Stat(decoded)
+	if err != nil {
+		return Prepared{}, fmt.Errorf("measuring decoded audio: %w", err)
+	}
+	totalSamples := info.Size() / frameBytes
+
+	spans := toSampleSpans(ranges, p.opts.Padding, p.source.SampleRate, totalSamples)
+	if len(spans) == 0 {
+		return Prepared{}, ErrNoSpeech
+	}
+	if len(spans) == 1 && spans[0].start == 0 && spans[0].end == totalSamples {
+		if p.opts.Mono {
+			return p.downmix()
+		}
+		return unchanged, nil
+	}
+
+	cut := filepath.Join(p.workDir, "cut.pcm")
+	if err := cutPCM(decoded, cut, spans, frameBytes); err != nil {
+		return Prepared{}, err
+	}
+	_ = os.Remove(decoded) // Frees disk early; cleanup removes it otherwise.
+
+	encodeArgs := []string{
+		"-nostdin", "-v", "error", "-y",
+		"-f", "s16le", "-ar", strconv.Itoa(p.source.SampleRate), "-ac", strconv.Itoa(channels),
+		"-i", cut, p.output,
+	}
+	if err := p.ffmpeg("encoding trimmed audio", encodeArgs...); err != nil {
+		return Prepared{}, err
+	}
+
+	return Prepared{Path: p.output, Kept: spansToRanges(spans, p.source.SampleRate)}, nil
+}
+
+// downmix merges every channel into one without cutting anything.
+func (p *preparation) downmix() (Prepared, error) {
+	args := []string{"-nostdin", "-v", "error", "-y", "-i", p.input, "-map", "0:a:0", "-ac", "1", p.output}
+	if err := p.ffmpeg("downmixing audio", args...); err != nil {
+		return Prepared{}, err
+	}
+	return Prepared{Path: p.output}, nil
+}
+
+// detect returns the ranges of the input, in seconds, that the trim mode
+// considers worth keeping, before padding.
+func (p *preparation) detect() ([]timeline.Range, error) {
+	if p.opts.Trim == TrimVAD {
+		return p.detectSpeech()
+	}
+	return p.detectSound()
+}
+
+// detectSound keeps everything between silences that ffmpeg's silencedetect
+// filter reports.
+func (p *preparation) detectSound() ([]timeline.Range, error) {
+	threshold := p.opts.SilenceThreshold
+	if threshold == "" {
+		threshold = DefaultSilenceThreshold
+	}
+	duration := p.opts.SilenceDuration
+	if duration == "" {
+		duration = DefaultSilenceDuration
+	}
+
+	filter := fmt.Sprintf("silencedetect=noise=%s:d=%s,ametadata=mode=print:file=-", threshold, duration)
+	args := []string{"-nostdin", "-v", "error", "-i", p.input, "-map", "0:a:0", "-af", filter, "-f", "null", "-"}
+	output, err := p.runner(p.ctx, "ffmpeg", args...)
+	if err != nil {
+		return nil, fmt.Errorf("ffmpeg silence detection failed: %w (output: %s)", err, strings.TrimSpace(string(output)))
+	}
+
+	silences, err := parseSilences(output, p.source.Duration)
+	if err != nil {
+		return nil, err
+	}
+	return complement(silences, p.source.Duration), nil
+}
+
+// detectSpeech decodes the input to the format the speech model reads and
+// keeps what it hears as speech.
+func (p *preparation) detectSpeech() ([]timeline.Range, error) {
+	pcmPath := filepath.Join(p.workDir, "speech.pcm")
+	if err := p.ffmpeg("decoding audio for voice detection", p.decodeArgs(pcmPath, 1, vadSampleRate)...); err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.Remove(pcmPath) }() // Frees disk early; cleanup removes it otherwise.
+
+	pcm, err := os.Open(pcmPath)
+	if err != nil {
+		return nil, fmt.Errorf("opening audio for voice detection: %w", err)
+	}
+	defer func() { _ = pcm.Close() }() // Read-only; a close error loses nothing.
+
+	return detectSpeech(pcm, p.opts.VAD)
+}
+
+// decodeArgs decodes the input's first audio stream to raw signed 16-bit PCM.
+func (p *preparation) decodeArgs(outputPath string, channels, sampleRate int) []string {
+	return []string{
+		"-nostdin", "-v", "error", "-y", "-i", p.input, "-map", "0:a:0",
+		"-ac", strconv.Itoa(channels), "-ar", strconv.Itoa(sampleRate),
+		"-f", "s16le", "-c:a", "pcm_s16le", outputPath,
+	}
+}
+
+func (p *preparation) ffmpeg(step string, args ...string) error {
+	output, err := p.runner(p.ctx, "ffmpeg", args...)
+	if err != nil {
+		return fmt.Errorf("ffmpeg %s failed: %w (output: %s)", step, err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// outputExtension keeps the input's container, which keeps its codec family.
+func outputExtension(inputPath string) string {
+	if ext := filepath.Ext(inputPath); ext != "" {
+		return ext
+	}
+	return defaultExtension
 }
 
 // DetectMIMEType returns the MIME type corresponding to an audio file's extension.

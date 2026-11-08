@@ -16,6 +16,10 @@ type MetaInfo struct {
 	Diarized  bool
 	KeyTerms  []string
 	Timestamp time.Time
+	// SourceDuration is the original recording's length in seconds. When it is
+	// set and differs from what Deepgram transcribed, both are shown, because
+	// trimming made the upload shorter.
+	SourceDuration float64
 }
 
 // Format takes a Deepgram response and metadata and builds a Markdown string.
@@ -36,8 +40,18 @@ func Format(resp *deepgram.PreRecordedResponse, meta MetaInfo) string {
 	if meta.FileSize != "" {
 		fmt.Fprintf(&sb, "| **File Size** | %s |\n", meta.FileSize)
 	}
-	if resp != nil && resp.Metadata.Duration > 0 {
-		fmt.Fprintf(&sb, "| **Duration** | %s |\n", deepgram.FormatSeconds(resp.Metadata.Duration))
+	transcribed := 0.0
+	if resp != nil {
+		transcribed = resp.Metadata.Duration
+	}
+	switch {
+	case meta.SourceDuration > 0:
+		fmt.Fprintf(&sb, "| **Duration** | %s |\n", deepgram.FormatSeconds(meta.SourceDuration))
+		if transcribed > 0 && transcribed != meta.SourceDuration {
+			fmt.Fprintf(&sb, "| **Transcribed** | %s |\n", deepgram.FormatSeconds(transcribed))
+		}
+	case transcribed > 0:
+		fmt.Fprintf(&sb, "| **Duration** | %s |\n", deepgram.FormatSeconds(transcribed))
 	}
 	if meta.Model != "" {
 		fmt.Fprintf(&sb, "| **Model** | `%s` |\n", meta.Model)

@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/timeline"
 )
 
 // Deepgram's published pay-as-you-go list rates for pre-recorded audio, in US
@@ -53,26 +55,37 @@ func listRatePerMinute(opts Options) (float64, bool) {
 	}
 }
 
-// CalculateCostWithOptions calculates estimated Deepgram transcription cost factoring in model rates and feature add-ons.
+// EstimateCostUSD estimates what Deepgram charges for a transcription, in US
+// dollars, factoring in model rates and feature add-ons. It reports false when
+// Deepgram publishes no rate for the model.
 //
 // The result is an estimate against Deepgram's published pay-as-you-go list
 // prices, so it ignores negotiated or volume rates. `job list` and `job inspect`
 // replace it with what Deepgram actually charged as soon as that is available.
-func CalculateCostWithOptions(durationSeconds float64, channels int, opts Options) string {
+func EstimateCostUSD(durationSeconds float64, channels int, opts Options) (float64, bool) {
 	if channels < 1 {
 		channels = 1
 	}
 
 	ratePerMinute, priced := listRatePerMinute(opts)
 	if !priced {
-		return CostUnknown
+		return 0, false
 	}
 
 	if len(opts.Keyterms()) > 0 {
 		ratePerMinute += KeytermRatePerMinute
 	}
 
-	cost := (durationSeconds / 60.0) * float64(channels) * ratePerMinute
+	return (durationSeconds / 60.0) * float64(channels) * ratePerMinute, true
+}
+
+// CalculateCostWithOptions formats EstimateCostUSD for display, or returns
+// CostUnknown when no estimate can be made.
+func CalculateCostWithOptions(durationSeconds float64, channels int, opts Options) string {
+	cost, priced := EstimateCostUSD(durationSeconds, channels, opts)
+	if !priced {
+		return CostUnknown
+	}
 	return fmt.Sprintf("$%.3f", cost)
 }
 
@@ -95,9 +108,14 @@ type JobRecord struct {
 }
 
 // JobRecordEnvelope wraps the job record metadata and raw Deepgram response inside cache files.
+//
+// Timeline records how the uploaded audio relates to the original recording,
+// so a cached response maps back to the original timeline exactly as a fresh
+// one does. It is nil for responses saved before it was recorded.
 type JobRecordEnvelope struct {
 	Record   JobRecord            `json:"record"`
 	Response *PreRecordedResponse `json:"response"`
+	Timeline *timeline.Timeline   `json:"timeline,omitempty"`
 }
 
 // GetJobEnvelope reads and unmarshals a JobRecordEnvelope from cacheDir under key.

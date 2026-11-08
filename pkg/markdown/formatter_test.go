@@ -167,3 +167,29 @@ func TestFormatMarkdownFallback(t *testing.T) {
 		t.Errorf("fallback transcript missing in markdown:\n%s", md)
 	}
 }
+
+func TestFormatShowsOriginalAndTranscribedDurations(t *testing.T) {
+	resp := &deepgram.PreRecordedResponse{Metadata: deepgram.Metadata{Duration: 65}}
+	for _, tc := range []struct {
+		name   string
+		source float64
+		want   []string
+		absent string
+	}{
+		{"trimmed", 125, []string{"| **Duration** | 02:05 |", "| **Transcribed** | 01:05 |"}, ""},
+		{"not trimmed", 65, []string{"| **Duration** | 01:05 |"}, "Transcribed"},
+		{"source unknown", 0, []string{"| **Duration** | 01:05 |"}, "Transcribed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Format(resp, MetaInfo{SourceDuration: tc.source})
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("missing %q in %s", want, got)
+				}
+			}
+			if tc.absent != "" && strings.Contains(got, tc.absent) {
+				t.Errorf("unexpected %q in %s", tc.absent, got)
+			}
+		})
+	}
+}

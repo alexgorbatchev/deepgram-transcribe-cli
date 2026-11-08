@@ -2,7 +2,10 @@ package deepgram
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
+
+	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/timeline"
 )
 
 // TestOptionsKeyterms covers the single definition of "this request boosts
@@ -143,5 +146,43 @@ func TestPreRecordedResponseUnmarshal(t *testing.T) {
 
 	if resp.Results.Utterances[1].Speaker != 1 {
 		t.Errorf("utterance 1 speaker = %d, want 1", resp.Results.Utterances[1].Speaker)
+	}
+}
+
+func TestOnTimelineMapsEveryTime(t *testing.T) {
+	// Kept 10-12 s and 20-25 s of the recording: the joint is at 2 s.
+	tl := timeline.Timeline{SourceDuration: 30, Kept: []timeline.Range{{Start: 10, End: 12}, {Start: 20, End: 25}}}
+	words := []Word{
+		{Word: "hello", Start: 0.5, End: 1},
+		{Word: "there", Start: 1.9, End: 2.4}, // straddles the joint, mostly after it
+		{Word: "friend", Start: 3, End: 3.5},
+	}
+	resp := PreRecordedResponse{
+		Metadata: Metadata{Duration: 7},
+		Results: Results{
+			Channels:   []Channel{{Alternatives: []Alternative{{Transcript: "hello there friend", Words: words}}}},
+			Utterances: []Utterance{{Start: 0.5, End: 3.5, Transcript: "hello there friend", Words: words}},
+		},
+	}
+
+	got := resp.OnTimeline(tl)
+
+	wantWords := []Word{
+		{Word: "hello", Start: 10.5, End: 11},
+		{Word: "there", Start: 20, End: 20.4},
+		{Word: "friend", Start: 21, End: 21.5},
+	}
+	if gotWords := got.Results.Channels[0].Alternatives[0].Words; !reflect.DeepEqual(gotWords, wantWords) {
+		t.Errorf("channel words = %+v, want %+v", gotWords, wantWords)
+	}
+	utterance := got.Results.Utterances[0]
+	if utterance.Start != 10.5 || utterance.End != 21.5 || !reflect.DeepEqual(utterance.Words, wantWords) {
+		t.Errorf("utterance = %+v", utterance)
+	}
+	if got.Metadata.Duration != 7 {
+		t.Errorf("billed duration changed to %v", got.Metadata.Duration)
+	}
+	if resp.Results.Utterances[0].Start != 0.5 || resp.Results.Channels[0].Alternatives[0].Words[0].Start != 0.5 {
+		t.Error("mapping modified the original response")
 	}
 }

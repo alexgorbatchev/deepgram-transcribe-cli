@@ -12,116 +12,182 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"reflect"
+	"strconv"
+
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/internal/cliout"
+	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/audio"
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/deepgram"
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/terms"
+	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/timeline"
 )
 
-func TestPrepareUploadReportsLargerAudio(t *testing.T) {
-	dir := t.TempDir()
-	t.Chdir(dir)
-	runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
-		if len(args) == 1 && args[0] == "-version" {
-			return []byte(strings.Replace(ffmpegVersionOutput, "ffmpeg version", name+" version", 1)), nil
-		}
-		if name == "ffprobe" {
-			if strings.Contains(args[len(args)-1], "transcribe-proc-") {
-				return []byte(`{"streams":[{"duration":"5"}]}`), nil
-			}
-			return []byte(`{"streams":[{"duration":"10"}]}`), nil
-		}
-		return nil, os.WriteFile(args[len(args)-1], []byte("larger processed recording"), 0o600)
+// fakeMedia stands in for ffmpeg and ffprobe, so that no test runs the real
+// programs. The source and the prepared audio report the durations it is
+// given, at 1000 samples per second in one channel.
+type fakeMedia struct {
+	t                 *testing.T
+	sourceDuration    string // "N/A" makes the probe fail
+	processedDuration string
+	silences          string // what silencedetect prints
+	probeErr          error
+	prepared          string // the last prepared file ffmpeg wrote
+}
+
+const fakeSampleRate = 1000
+
+func (f *fakeMedia) run(_ context.Context, name string, args ...string) ([]byte, error) {
+	if len(args) == 1 && args[0] == "-version" {
+		return []byte(strings.Replace(ffmpegVersionOutput, "ffmpeg version", name+" version", 1)), nil
 	}
-	root, out, stderr := newTestCLIWithRunner(t, t.TempDir(), "", runner)
+	target := args[len(args)-1]
+	joined := strings.Join(args, " ")
+
+	if name == "ffprobe" {
+		if f.probeErr != nil {
+			return nil, f.probeErr
+		}
+		duration := f.sourceDuration
+		if strings.Contains(target, "transcribe-proc-") {
+			duration = f.processedDuration
+		}
+		return []byte(`{"streams":[{"duration":"` + duration + `","sample_rate":"1000","channels":1}]}`), nil
+	}
+
+	switch {
+	case strings.Contains(joined, "silencedetect="):
+		return []byte(f.silences), nil
+	case strings.Contains(joined, "pcm_s16le"):
+		seconds, err := strconv.ParseFloat(f.sourceDuration, 64)
+		if err != nil {
+			f.t.Fatalf("decoding without a source duration: %v", err)
+		}
+		return nil, os.WriteFile(target, make([]byte, int(seconds*fakeSampleRate)*2), 0o600)
+	default:
+		f.prepared = target
+		return nil, os.WriteFile(target, []byte("larger prepared audio"), 0o600)
+	}
+}
+
+// newPrepareRun returns a run of transcript create that stops before upload.
+func newPrepareRun(t *testing.T, media *fakeMedia, opts *transcriptOptions) (*transcriptRun, *bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+	root, out, stderr := newTestCLIWithRunner(t, t.TempDir(), "", media.run)
 	root.SetContext(t.Context())
-	t.Setenv("PATH", t.TempDir())
-	audioPath := writeAudio(t, dir, "recording.opus", "source")
-	run := &transcriptRun{
-		cmd: root, out: cliout.New(out, stderr),
-		global: &globalOptions{depsRunner: runner},
-		opts:   &transcriptOptions{}, audioPath: audioPath,
-	}
+	audioPath := writeAudio(t, t.TempDir(), "recording.opus", "source")
+	run := &transcriptRun{cmd: root, out: cliout.New(out, stderr), global: &globalOptions{depsRunner: media.run}, opts: opts, audioPath: audioPath}
 	if err := run.loadSource(); err != nil {
 		t.Fatal(err)
 	}
+	return run, out, stderr
+}
+
+func monoOnly() *transcriptOptions { return &transcriptOptions{trimMode: audio.TrimNone} }
+
+func TestPrepareUploadReportsLargerAudio(t *testing.T) {
+	media := &fakeMedia{t: t, sourceDuration: "10", processedDuration: "5"}
+	run, out, stderr := newPrepareRun(t, media, monoOnly())
 	cleanup, err := run.prepareUpload()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cleanup()
-	if !strings.Contains(stderr.String(), "up from 6 B") || strings.Contains(stderr.String(), "Upload is 26 B, down from") || out.Len() != 0 {
+	if !strings.Contains(stderr.String(), "up from 6 B") || strings.Contains(stderr.String(), "down from 6 B") || out.Len() != 0 {
 		t.Fatalf("incorrect size reporting: %s", stderr)
 	}
-	if run.uploadPath == audioPath {
-		t.Fatal("prepared upload was not selected")
+	if run.uploadPath == run.audioPath || run.timeline.Trimmed() || run.timeline.SourceDuration != 10 {
+		t.Fatalf("prepared upload was not selected: %s %+v", run.uploadPath, run.timeline)
 	}
 }
 
 func TestPrepareUploadRequiresShorterDuration(t *testing.T) {
 	for _, mode := range []string{"0", "1"} {
 		for _, tc := range []struct {
-			name, duration string
-			shorter        bool
+			name, source, processed string
+			probeErr                error
+			shorter                 bool
+			want                    string
 		}{
-			{"shorter", "5", true}, {"equal", "10", false}, {"longer", "12", false},
-			{"unknown", "N/A", false},
-			{"original unknown", "5", false},
-			{"probe failed", "5", false},
-			{"mono only", "10", false},
+			{name: "shorter", source: "10", processed: "5", shorter: true},
+			{name: "equal", source: "10", processed: "10", want: "did not shorten it"},
+			{name: "longer", source: "10", processed: "12", want: "did not shorten it"},
+			{name: "unknown", source: "10", processed: "N/A", want: "Could not compare audio durations"},
+			{name: "original unknown", source: "N/A", processed: "5", want: "Could not measure the recording"},
+			{name: "probe failed", source: "10", processed: "5", probeErr: errors.New("duration probe failed"), want: "Could not measure the recording"},
 		} {
 			t.Run(mode+"/"+tc.name, func(t *testing.T) {
-				t.Chdir(t.TempDir())
 				t.Setenv("AGENT", mode)
-				var prepared string
-				runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
-					if len(args) == 1 {
-						return []byte(strings.Replace(ffmpegVersionOutput, "ffmpeg version", name+" version", 1)), nil
-					}
-					if name == "ffprobe" {
-						if tc.name == "probe failed" {
-							return nil, errors.New("duration probe failed")
-						}
-						duration := "10"
-						if tc.name == "original unknown" {
-							duration = "N/A"
-						}
-						if args[len(args)-1] == prepared {
-							duration = tc.duration
-						}
-						return []byte(`{"streams":[{"duration":"` + duration + `"}]}`), nil
-					}
-					prepared = args[len(args)-1]
-					return nil, os.WriteFile(prepared, []byte("larger prepared audio"), 0o600)
-				}
-				root, out, stderr := newTestCLIWithRunner(t, t.TempDir(), "", runner)
-				root.SetContext(t.Context())
-				audioPath := writeAudio(t, t.TempDir(), "recording.opus", "source")
-				run := &transcriptRun{cmd: root, out: cliout.New(out, stderr), global: &globalOptions{depsRunner: runner}, opts: &transcriptOptions{}, audioPath: audioPath}
-				run.opts.noTrimSilence = tc.name == "mono only"
-				if err := run.loadSource(); err != nil {
-					t.Fatal(err)
-				}
+				media := &fakeMedia{t: t, sourceDuration: tc.source, processedDuration: tc.processed, probeErr: tc.probeErr}
+				run, out, stderr := newPrepareRun(t, media, monoOnly())
+				t.Setenv("AGENT", mode)
+				run.out = cliout.New(out, stderr)
 				cleanup, err := run.prepareUpload()
 				if err != nil {
 					t.Fatal(err)
 				}
 				defer cleanup()
-				if (run.uploadPath != audioPath) != tc.shorter {
+				if (run.uploadPath != run.audioPath) != tc.shorter {
 					t.Fatalf("wrong upload selection: %s; %s", run.uploadPath, stderr)
 				}
 				if out.Len() != 0 {
 					t.Fatalf("diagnostic leaked to stdout: %s", out)
 				}
-				if !tc.shorter {
-					if _, err := os.Stat(prepared); !os.IsNotExist(err) {
+				if tc.shorter {
+					return
+				}
+				if media.prepared != "" {
+					if _, err := os.Stat(media.prepared); !os.IsNotExist(err) {
 						t.Fatalf("discarded audio retained: %v", err)
 					}
-					if !strings.Contains(stderr.String(), "original audio") {
-						t.Fatalf("missing fallback explanation: %s", stderr)
-					}
+				}
+				if !strings.Contains(stderr.String(), "original audio") || !strings.Contains(stderr.String(), tc.want) {
+					t.Fatalf("missing fallback explanation %q: %s", tc.want, stderr)
 				}
 			})
 		}
+	}
+}
+
+func TestPrepareUploadRecordsKeptRanges(t *testing.T) {
+	media := &fakeMedia{t: t, sourceDuration: "60", processedDuration: "25", silences: "lavfi.silence_start=5\nlavfi.silence_end=40\n"}
+	run, _, stderr := newPrepareRun(t, media, &transcriptOptions{trimMode: audio.TrimSilence, noMono: true})
+	cleanup, err := run.prepareUpload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	want := timeline.Timeline{SourceDuration: 60, Kept: []timeline.Range{{Start: 0, End: 5}, {Start: 40, End: 60}}}
+	if !reflect.DeepEqual(run.timeline, want) || run.uploadPath == run.audioPath {
+		t.Fatalf("timeline %+v upload %s; %s", run.timeline, run.uploadPath, stderr)
+	}
+}
+
+func TestPrepareUploadKeepsOriginalWhenTrimmingFindsNothingToDo(t *testing.T) {
+	for _, tc := range []struct {
+		name, silences, want string
+	}{
+		{"all silent", "lavfi.silence_start=0\n", "No speech was detected; uploading original audio."},
+		{"nothing silent", "", "Nothing worth cutting was found; uploading original audio."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			media := &fakeMedia{t: t, sourceDuration: "3", silences: tc.silences}
+			run, _, stderr := newPrepareRun(t, media, &transcriptOptions{trimMode: audio.TrimSilence, noMono: true})
+			cleanup, err := run.prepareUpload()
+			cleanup()
+			if err != nil || run.uploadPath != run.audioPath || run.timeline.Trimmed() || !strings.Contains(stderr.String(), tc.want) {
+				t.Fatalf("error %v upload %s timeline %+v: %s", err, run.uploadPath, run.timeline, stderr)
+			}
+		})
+	}
+}
+
+func TestPrepareUploadFailsWhenFFmpegFails(t *testing.T) {
+	media := &fakeMedia{t: t, sourceDuration: "3", silences: "lavfi.silence_start=bad\n"}
+	run, _, _ := newPrepareRun(t, media, &transcriptOptions{trimMode: audio.TrimSilence})
+	cleanup, err := run.prepareUpload()
+	cleanup()
+	if err == nil || !strings.Contains(err.Error(), "preparing audio for upload") {
+		t.Fatalf("got %v", err)
 	}
 }
 
@@ -138,7 +204,7 @@ func TestPrepareUploadWithoutFFprobe(t *testing.T) {
 	root, out, stderr := newTestCLIWithRunner(t, t.TempDir(), "", runner)
 	root.SetContext(t.Context())
 	audioPath := writeAudio(t, t.TempDir(), "recording.opus", "source")
-	run := &transcriptRun{cmd: root, out: cliout.New(out, stderr), global: &globalOptions{depsRunner: runner}, opts: &transcriptOptions{}, audioPath: audioPath}
+	run := &transcriptRun{cmd: root, out: cliout.New(out, stderr), global: &globalOptions{depsRunner: runner}, opts: monoOnly(), audioPath: audioPath}
 	if err := run.loadSource(); err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +391,7 @@ func TestTranscriptCreateServesCachedResponseBeforeTouchingAudio(t *testing.T) {
 			{Speaker: 0, Transcript: "Cached transcript without preprocessing"},
 		}},
 	}
-	if err := deepgram.SaveCachedResponse(cacheDir, optionsKey, saved); err != nil {
+	if err := deepgram.SaveCachedResponse(cacheDir, optionsKey, saved, timeline.Timeline{}); err != nil {
 		t.Fatalf("seeding the cached response: %v", err)
 	}
 

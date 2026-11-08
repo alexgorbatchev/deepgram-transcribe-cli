@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/timeline"
 )
 
 // DefaultCacheDir returns the default transcript cache directory using XDG standards.
@@ -59,8 +61,9 @@ func CacheKey(audioData []byte, opts Options) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// GetCachedResponse attempts to load a previously saved Deepgram response from cacheDir.
-func GetCachedResponse(cacheDir, key string) (*PreRecordedResponse, error) {
+// GetCachedResponse loads a previously saved Deepgram response, with the
+// timeline it was transcribed on, from cacheDir.
+func GetCachedResponse(cacheDir, key string) (*JobRecordEnvelope, error) {
 	cachePath := filepath.Join(cacheDir, key+".json")
 	data, readErr := os.ReadFile(cachePath)
 	if readErr != nil {
@@ -73,17 +76,22 @@ func GetCachedResponse(cacheDir, key string) (*PreRecordedResponse, error) {
 		*PreRecordedResponse
 		Record   *JobRecord           `json:"record"`
 		Response *PreRecordedResponse `json:"response"`
+		Timeline *timeline.Timeline   `json:"timeline"`
 	}
 	if jsonErr := json.Unmarshal(data, &stored); jsonErr != nil {
 		return nil, fmt.Errorf("decoding cached response JSON: %w", jsonErr)
 	}
 	if stored.Response != nil {
-		return stored.Response, nil
+		env := &JobRecordEnvelope{Response: stored.Response, Timeline: stored.Timeline}
+		if stored.Record != nil {
+			env.Record = *stored.Record
+		}
+		return env, nil
 	}
 	if stored.Record != nil || stored.PreRecordedResponse == nil {
 		return nil, fmt.Errorf("cache file %q contains no transcription response", cachePath)
 	}
-	return stored.PreRecordedResponse, nil
+	return &JobRecordEnvelope{Response: stored.PreRecordedResponse}, nil
 }
 
 // FindCachedJobBySourceSHA scans cacheDir for any cached job envelope matching raw sourceSHA.
@@ -125,14 +133,17 @@ func FindCachedJobBySourceSHA(cacheDir, sourceSHA string) (*JobRecordEnvelope, e
 	return nil, fmt.Errorf("no cached job found matching source SHA %q", sourceSHA)
 }
 
-// SaveCachedResponse saves a Deepgram response JSON to cacheDir under key, wrapping in JobRecordEnvelope.
-func SaveCachedResponse(cacheDir, key string, resp *PreRecordedResponse) error {
+// SaveCachedResponse saves a Deepgram response JSON to cacheDir under key,
+// wrapped in a JobRecordEnvelope together with the timeline of the audio it
+// transcribed.
+func SaveCachedResponse(cacheDir, key string, resp *PreRecordedResponse, tl timeline.Timeline) error {
 	env, _ := GetJobEnvelope(cacheDir, key)
 	if env == nil {
 		env = &JobRecordEnvelope{}
 	}
 
 	env.Response = resp
+	env.Timeline = &tl
 	if env.Record.SHA256 == "" {
 		env.Record.SHA256 = key
 	}

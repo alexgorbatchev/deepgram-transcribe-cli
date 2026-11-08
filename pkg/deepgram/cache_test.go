@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/timeline"
 )
 
 func TestCacheKey(t *testing.T) {
@@ -150,22 +153,28 @@ func TestSaveAndGetCachedResponse(t *testing.T) {
 
 	key := "test-cache-key-123"
 
-	// Save
-	if err := SaveCachedResponse(dir, key, resp); err != nil {
+	tl := timeline.Timeline{SourceDuration: 60, Kept: []timeline.Range{{Start: 1, End: 20}, {Start: 30, End: 56.5}}}
+
+	if err := SaveCachedResponse(dir, key, resp, tl); err != nil {
 		t.Fatalf("SaveCachedResponse failed: %v", err)
 	}
 
-	// Get
 	got, err := GetCachedResponse(dir, key)
 	if err != nil {
 		t.Fatalf("GetCachedResponse failed: %v", err)
 	}
 
-	if got.Metadata.RequestID != "req-cache-123" {
-		t.Errorf("expected RequestID 'req-cache-123', got %q", got.Metadata.RequestID)
+	if got.Response.Metadata.RequestID != "req-cache-123" {
+		t.Errorf("expected RequestID 'req-cache-123', got %q", got.Response.Metadata.RequestID)
 	}
-	if len(got.Results.Utterances) != 1 || got.Results.Utterances[0].Transcript != "Hello world" {
+	if len(got.Response.Results.Utterances) != 1 || got.Response.Results.Utterances[0].Transcript != "Hello world" {
 		t.Errorf("unexpected transcript in cached response: %+v", got)
+	}
+	if got.Timeline == nil || !reflect.DeepEqual(*got.Timeline, tl) {
+		t.Errorf("timeline did not survive the cache: %+v", got.Timeline)
+	}
+	if got.Record.SHA256 != key || got.Record.RequestID != "req-cache-123" {
+		t.Errorf("record not returned: %+v", got.Record)
 	}
 }
 
@@ -195,8 +204,8 @@ func TestGetCachedResponseRawFormat(t *testing.T) {
 		t.Fatalf("GetCachedResponse failed on raw format: %v", err)
 	}
 
-	if got.Metadata.RequestID != "req-raw-999" {
-		t.Errorf("expected 'req-raw-999', got %q", got.Metadata.RequestID)
+	if got.Response.Metadata.RequestID != "req-raw-999" || got.Timeline != nil {
+		t.Errorf("expected 'req-raw-999' without a timeline, got %+v", got)
 	}
 }
 

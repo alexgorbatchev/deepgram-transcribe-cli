@@ -28,16 +28,24 @@ func TestTranscriptTemporaryAudioLifecycle(t *testing.T) {
 				if len(args) == 1 && args[0] == "-version" {
 					return []byte(strings.Replace(ffmpegVersionOutput, "ffmpeg version", name+" version", 1)), nil
 				}
+				target := args[len(args)-1]
 				if name == "ffprobe" {
-					if stage == "cancel probe" {
-						cancel()
-						return nil, ctx.Err()
-					}
 					duration := "10"
-					if args[len(args)-1] == prepared {
+					if target == prepared {
+						if stage == "cancel probe" {
+							cancel()
+							return nil, ctx.Err()
+						}
 						duration = "5"
 					}
-					return []byte(`{"streams":[{"duration":"` + duration + `"}]}`), nil
+					return []byte(`{"streams":[{"duration":"` + duration + `","sample_rate":"1000","channels":1}]}`), nil
+				}
+				joined := strings.Join(args, " ")
+				if strings.Contains(joined, "silencedetect=") {
+					return []byte("lavfi.silence_start=2\nlavfi.silence_end=7\n"), nil
+				}
+				if strings.Contains(joined, "pcm_s16le") {
+					return nil, os.WriteFile(target, make([]byte, 20000), 0o600)
 				}
 				prepared = args[len(args)-1]
 				if err := os.WriteFile(prepared, []byte("prepared"), 0o600); err != nil {
@@ -76,7 +84,7 @@ func TestTranscriptTemporaryAudioLifecycle(t *testing.T) {
 			defer server.Close()
 			root, _, _ := newTestCLIWithRunner(t, t.TempDir(), server.URL, runner)
 			source := writeAudio(t, t.TempDir(), "recording.wav", "source")
-			args := []string{"transcript", "create", source, "--no-cache"}
+			args := []string{"transcript", "create", source, "--no-cache", "--trim-mode", "silence"}
 			if stage != "missing key" {
 				args = append(args, "--api-key", "test-key")
 			}
@@ -91,11 +99,11 @@ func TestTranscriptTemporaryAudioLifecycle(t *testing.T) {
 			if strings.HasPrefix(stage, "cancel ") && !errors.Is(err, context.Canceled) {
 				t.Errorf("expected cancellation, got %v", err)
 			}
-			if prepared == "" || filepath.Dir(prepared) != os.TempDir() {
+			if prepared == "" || filepath.Dir(filepath.Dir(prepared)) != os.TempDir() {
 				t.Errorf("prepared audio %q is outside OS temp directory %q", prepared, os.TempDir())
 			}
-			if _, err := os.Stat(prepared); !errors.Is(err, os.ErrNotExist) {
-				t.Errorf("temporary audio retained after command exit: %v", err)
+			if left, err := os.ReadDir(tmpDir); err != nil || len(left) != 0 {
+				t.Errorf("temporary audio retained after command exit: %v %v", left, err)
 			}
 			if data, err := os.ReadFile(source); err != nil || string(data) != "source" {
 				t.Errorf("source audio changed: %q, %v", data, err)

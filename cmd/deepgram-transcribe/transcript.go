@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -18,6 +19,8 @@ import (
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/deepgram"
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/markdown"
 	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/terms"
+	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/timeline"
+	"github.com/alexgorbatchev/deepgram-transcribe-cli/pkg/transcriptjson"
 )
 
 const (
@@ -27,6 +30,16 @@ const (
 	// termsSummaryLimit caps how many words are listed when explaining that a
 	// cached response was requested with different keyterms.
 	termsSummaryLimit = 10
+
+	formatMarkdown = "markdown"
+	formatJSON     = "json"
+)
+
+// Flags that tune one trim mode only. Naming them with another mode is an
+// error rather than a silent no-op.
+var (
+	vadOnlyFlags     = []string{"vad-threshold", "vad-min-speech", "vad-min-silence"}
+	silenceOnlyFlags = []string{"silence-threshold", "silence-duration"}
 )
 
 // transcriptOptions holds the flags of `transcript create`.
@@ -42,9 +55,13 @@ type transcriptOptions struct {
 	force            bool
 	noPreprocess     bool
 	noMono           bool
-	noTrimSilence    bool
+	format           string
+	trimModeFlag     string
+	trimMode         audio.TrimMode
+	trimPadding      float64
 	silenceThreshold string
 	silenceDuration  string
+	vad              audio.VADOptions
 }
 
 // diarizeModel returns the Deepgram diarizer to run, or an empty string when the
@@ -60,8 +77,56 @@ func (o *transcriptOptions) diarizeModel() string {
 // which halves what Deepgram bills for the recording.
 func (o *transcriptOptions) wantsMono() bool { return !o.noPreprocess && !o.noMono }
 
-// wantsTrimSilence reports whether long silences should be cut before upload.
-func (o *transcriptOptions) wantsTrimSilence() bool { return !o.noPreprocess && !o.noTrimSilence }
+// effectiveTrimMode returns how audio is trimmed before upload, which is not
+// at all when preprocessing is off.
+func (o *transcriptOptions) effectiveTrimMode() audio.TrimMode {
+	if o.noPreprocess {
+		return audio.TrimNone
+	}
+	return o.trimMode
+}
+
+// wantsTrim reports whether anything may be cut before upload.
+func (o *transcriptOptions) wantsTrim() bool { return o.effectiveTrimMode().Cuts() }
+
+// validate checks the flags before any audio is read or any money is spent.
+func (o *transcriptOptions) validate(cmd *cobra.Command) error {
+	if o.format != formatMarkdown && o.format != formatJSON {
+		return fmt.Errorf("unknown format %q; use %s or %s", o.format, formatMarkdown, formatJSON)
+	}
+
+	mode, err := audio.ParseTrimMode(o.trimModeFlag)
+	if err != nil {
+		return err
+	}
+	o.trimMode = mode
+
+	flags := cmd.Flags()
+	for _, rule := range []struct {
+		names []string
+		mode  audio.TrimMode
+	}{
+		{vadOnlyFlags, audio.TrimVAD},
+		{silenceOnlyFlags, audio.TrimSilence},
+	} {
+		for _, name := range rule.names {
+			if flags.Changed(name) && mode != rule.mode {
+				return fmt.Errorf("--%s applies only with --trim-mode %s", name, rule.mode)
+			}
+		}
+	}
+	if flags.Changed("trim-padding") && mode == audio.TrimNone {
+		return errors.New("--trim-padding does not apply with --trim-mode none")
+	}
+
+	if o.trimPadding < 0 || math.IsNaN(o.trimPadding) {
+		return fmt.Errorf("trim padding %v is negative", o.trimPadding)
+	}
+	if mode == audio.TrimVAD {
+		return o.vad.Validate()
+	}
+	return nil
+}
 
 // newTranscriptCmd builds the transcript subject.
 func newTranscriptCmd(g *globalOptions) *cobra.Command {
@@ -81,16 +146,24 @@ func newTranscriptCreateCmd(g *globalOptions) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "create <audio-file>",
-		Short: "Transcribe an audio file to Markdown",
-		Long: `Transcribe the speech in an audio file to Markdown, labelled by speaker.
+		Short: "Transcribe an audio file to Markdown or JSON",
+		Long: `Transcribe the speech in an audio file to Markdown or JSON, labelled by speaker.
 
 The transcript is written to stdout unless --output names a file, so it can be
 redirected:
 
   deepgram-transcribe transcript create interview.m4a > interview.md
-  deepgram-transcribe transcript create interview.m4a -t Envoy -o notes.md`,
+  deepgram-transcribe transcript create interview.m4a -t Envoy -o notes.md
+  deepgram-transcribe transcript create interview.m4a --format json > interview.json
+
+Before upload, the parts of the recording without speech are cut out, which
+lowers the cost. Every time in the transcript is still on the original
+recording's timeline.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := opts.validate(cmd); err != nil {
+				return err
+			}
 			return runTranscriptCreate(cmd, g, opts, args[0])
 		},
 	}
@@ -107,9 +180,14 @@ redirected:
 	flags.BoolVar(&opts.noCache, "no-cache", false, "Bypass the response cache, for both reads and writes")
 	flags.BoolVar(&opts.noPreprocess, "no-preprocess", false, "Disable ffmpeg preprocessing before upload")
 	flags.BoolVar(&opts.noMono, "no-mono", false, "Disable stereo-to-mono downmixing")
-	flags.BoolVar(&opts.noTrimSilence, "no-trim-silence", false, "Disable silence trimming")
-	flags.StringVar(&opts.silenceThreshold, "silence-threshold", audio.DefaultSilenceThreshold, "Noise threshold below which audio counts as silence")
-	flags.StringVar(&opts.silenceDuration, "silence-duration", audio.DefaultSilenceDuration, "Minimum silence duration, in seconds, before it is trimmed")
+	flags.StringVar(&opts.format, "format", formatMarkdown, "Transcript format: markdown or json")
+	flags.StringVar(&opts.trimModeFlag, "trim-mode", string(audio.TrimVAD), "How to find the audio worth uploading: vad (speech model), silence (volume threshold) or none")
+	flags.Float64Var(&opts.trimPadding, "trim-padding", audio.DefaultTrimPadding, "Seconds of audio kept on each side of what trimming keeps")
+	flags.Float64Var(&opts.vad.Threshold, "vad-threshold", audio.DefaultVADThreshold, "Speech probability, between 0 and 1, at which the vad mode hears speech")
+	flags.Float64Var(&opts.vad.MinSpeech, "vad-min-speech", audio.DefaultVADMinSpeech, "Shortest speech, in seconds, that the vad mode keeps")
+	flags.Float64Var(&opts.vad.MinSilence, "vad-min-silence", audio.DefaultVADMinSilence, "Shortest pause, in seconds, that the vad mode cuts")
+	flags.StringVar(&opts.silenceThreshold, "silence-threshold", audio.DefaultSilenceThreshold, "Volume below which the silence mode counts audio as silent")
+	flags.StringVar(&opts.silenceDuration, "silence-duration", audio.DefaultSilenceDuration, "Shortest silence, in seconds, that the silence mode cuts")
 
 	return cmd
 }
@@ -134,7 +212,9 @@ type transcriptRun struct {
 
 	uploadPath      string
 	response        *deepgram.PreRecordedResponse
+	timeline        timeline.Timeline
 	cost            string
+	costUSD         *float64
 	servedFromCache bool
 }
 
@@ -242,8 +322,7 @@ func (r *transcriptRun) serveCachedResponse() {
 	if cached, err := deepgram.GetCachedResponse(cacheDir, r.optionsKey); err == nil && cached != nil {
 		r.out.Status("Cache hit for %s, serving the cached response.", name)
 		r.out.Detail("cache_key: %s", r.optionsKey)
-		r.response = cached
-		r.servedFromCache = true
+		r.serveEnvelope(cached)
 		return
 	}
 
@@ -265,8 +344,23 @@ func (r *transcriptRun) serveCachedResponse() {
 	r.out.Status("Serving the cached response. Use --force to re-transcribe and be billed again.")
 	r.out.Detail("cache_key: %s", envelope.Record.SHA256)
 
+	r.serveEnvelope(envelope)
+}
+
+// serveEnvelope answers the run from a cached response and the timeline its
+// audio was uploaded on.
+func (r *transcriptRun) serveEnvelope(envelope *deepgram.JobRecordEnvelope) {
 	r.response = envelope.Response
 	r.servedFromCache = true
+
+	if envelope.Timeline != nil {
+		r.timeline = *envelope.Timeline
+		return
+	}
+	if envelope.Record.Preprocessed {
+		r.out.Warn("The cached transcript was saved without a record of what trimming cut, so its times may be on the trimmed audio rather than the original recording.")
+		r.out.Hint("Use --force to transcribe again and be billed again.")
+	}
 }
 
 // preprocessingReady reports whether ffmpeg and ffprobe can prepare and measure audio, and
@@ -303,8 +397,8 @@ func (r *transcriptRun) preprocessingReady() bool {
 }
 
 // prepareUpload selects prepared audio only when it is shorter than the source.
-// It is skipped when a cached response
-// already answered the request, because nothing will be uploaded.
+// It is skipped when a cached response already answered the request, because
+// nothing will be uploaded.
 //
 // The returned function removes the temporary audio and is safe to call even
 // when no file was written.
@@ -314,7 +408,7 @@ func (r *transcriptRun) prepareUpload() (func(), error) {
 	if r.response != nil {
 		return noCleanup, nil
 	}
-	if !r.opts.wantsMono() && !r.opts.wantsTrimSilence() {
+	if !r.opts.wantsMono() && !r.opts.wantsTrim() {
 		return noCleanup, nil
 	}
 
@@ -322,45 +416,63 @@ func (r *transcriptRun) prepareUpload() (func(), error) {
 		return noCleanup, nil
 	}
 
+	ctx := r.cmd.Context()
 	r.out.Status("Preprocessing %s before upload.", filepath.Base(r.audioPath))
-	r.out.Detail("mono: %t trim_silence: %t", r.opts.wantsMono(), r.opts.wantsTrimSilence())
+	r.out.Detail("mono: %t trim_mode: %s", r.opts.wantsMono(), r.opts.effectiveTrimMode())
 
-	processed, cleanup, err := audio.PreprocessAudio(r.cmd.Context(), r.audioPath, audio.PreprocessOptions{
+	source, err := audio.Probe(ctx, r.audioPath, r.global.depsRunner)
+	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return noCleanup, err
+		}
+		r.out.Warn("Could not measure the recording; uploading original audio.")
+		r.out.Detail("%v", err)
+		return noCleanup, nil
+	}
+	r.timeline.SourceDuration = source.Duration
+
+	prepared, cleanup, err := audio.PreprocessAudio(ctx, r.audioPath, source, audio.PreprocessOptions{
 		Mono:             r.opts.wantsMono(),
-		TrimSilence:      r.opts.wantsTrimSilence(),
+		Trim:             r.opts.effectiveTrimMode(),
 		SilenceThreshold: r.opts.silenceThreshold,
 		SilenceDuration:  r.opts.silenceDuration,
+		VAD:              r.opts.vad,
+		Padding:          r.opts.trimPadding,
 		Runner:           r.global.depsRunner,
 	})
+	if errors.Is(err, audio.ErrNoSpeech) {
+		r.out.Warn("No speech was detected; uploading original audio.")
+		return noCleanup, nil
+	}
 	if err != nil {
 		return noCleanup, fmt.Errorf("preparing audio for upload: %w", err)
 	}
+	if prepared.Path == r.audioPath {
+		r.out.Status("Nothing worth cutting was found; uploading original audio.")
+		return noCleanup, nil
+	}
 
-	originalDuration, originalErr := audio.Duration(r.cmd.Context(), r.audioPath, r.global.depsRunner)
-	processedDuration, processedErr := audio.Duration(r.cmd.Context(), processed, r.global.depsRunner)
-	if originalErr != nil || processedErr != nil {
+	processed, err := audio.Probe(ctx, prepared.Path, r.global.depsRunner)
+	if err != nil {
 		cleanup()
-		if err := r.cmd.Context().Err(); err != nil {
+		if err := ctx.Err(); err != nil {
 			return noCleanup, err
 		}
 		r.out.Warn("Could not compare audio durations; uploading original audio.")
-		if originalErr != nil {
-			r.out.Detail("%v", originalErr)
-		}
-		if processedErr != nil {
-			r.out.Detail("%v", processedErr)
-		}
+		r.out.Detail("%v", err)
 		return noCleanup, nil
 	}
-	if processedDuration >= originalDuration {
+	if processed.Duration >= source.Duration {
 		cleanup()
-		r.out.Status("Processed audio is %.3f s, original is %.3f s; uploading original audio because processing did not shorten it.", processedDuration, originalDuration)
+		r.out.Status("Processed audio is %.3f s, original is %.3f s; uploading original audio because processing did not shorten it.", processed.Duration, source.Duration)
 		return noCleanup, nil
 	}
-	r.out.Status("Audio duration is %.3f s, down from %.3f s.", processedDuration, originalDuration)
-	r.uploadPath = processed
+	r.out.Status("Audio duration is %.3f s, down from %.3f s.", processed.Duration, source.Duration)
+	r.out.Detail("kept_ranges: %d", len(prepared.Kept))
+	r.uploadPath = prepared.Path
+	r.timeline.Kept = prepared.Kept
 
-	if info, err := os.Stat(processed); err == nil {
+	if info, err := os.Stat(prepared.Path); err == nil {
 		r.reportUploadSize(info.Size())
 	}
 
@@ -415,7 +527,7 @@ func (r *transcriptRun) fetchTranscript() error {
 	r.response = response
 
 	if !r.opts.noCache {
-		if err := deepgram.SaveCachedResponse(r.global.resolvedCacheDir(), r.optionsKey, response); err != nil {
+		if err := deepgram.SaveCachedResponse(r.global.resolvedCacheDir(), r.optionsKey, response, r.timeline); err != nil {
 			r.out.Warn("Could not write the response to cache: %v", err)
 		}
 	}
@@ -454,6 +566,9 @@ func (r *transcriptRun) recordJob() {
 	}
 
 	r.cost = deepgram.CalculateCostWithOptions(duration, channels, r.request)
+	if cost, priced := deepgram.EstimateCostUSD(duration, channels, r.request); priced {
+		r.costUSD = &cost
+	}
 
 	if r.opts.noCache || r.servedFromCache {
 		return
@@ -475,7 +590,7 @@ func (r *transcriptRun) recordJob() {
 		Channels:        channels,
 		Model:           r.opts.model,
 		DiarizeModel:    r.request.DiarizeModel,
-		Preprocessed:    r.opts.wantsMono() || r.opts.wantsTrimSilence(),
+		Preprocessed:    r.opts.wantsMono() || r.opts.wantsTrim(),
 		Terms:           r.keyTerms,
 		CostUSD:         r.cost,
 		CostIsActual:    false,
@@ -486,19 +601,16 @@ func (r *transcriptRun) recordJob() {
 	}
 }
 
-// writeTranscript renders the Markdown transcript to the screen or to a file.
+// writeTranscript renders the transcript, with every time mapped to the
+// original recording, to the screen or to a file.
 func (r *transcriptRun) writeTranscript() error {
-	content := markdown.Format(r.response, markdown.MetaInfo{
-		Filename:  filepath.Base(r.audioPath),
-		FileSize:  formatFileSize(r.audioSize),
-		Model:     r.opts.model,
-		Diarized:  r.request.Diarized(),
-		KeyTerms:  r.keyTerms,
-		Timestamp: time.Now(),
-	})
+	content, err := r.renderTranscript()
+	if err != nil {
+		return err
+	}
 
 	if r.opts.outputFile == "" {
-		if _, err := fmt.Fprint(r.out.Out(), content); err != nil {
+		if _, err := r.out.Out().Write(content); err != nil {
 			return fmt.Errorf("writing transcript: %w", err)
 		}
 		return nil
@@ -510,7 +622,7 @@ func (r *transcriptRun) writeTranscript() error {
 		}
 	}
 
-	if err := os.WriteFile(r.opts.outputFile, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(r.opts.outputFile, content, 0o644); err != nil {
 		return fmt.Errorf("writing transcript to %q: %w", r.opts.outputFile, err)
 	}
 
@@ -525,6 +637,34 @@ func (r *transcriptRun) writeTranscript() error {
 	r.out.Success("Saved the transcript to %s, at a cost of %s.", r.opts.outputFile, r.cost)
 
 	return nil
+}
+
+// renderTranscript formats the response in the requested format.
+func (r *transcriptRun) renderTranscript() ([]byte, error) {
+	mapped := r.response.OnTimeline(r.timeline)
+
+	if r.opts.format == formatJSON {
+		return transcriptjson.Format(mapped, transcriptjson.Meta{
+			Filename: filepath.Base(r.audioPath),
+			FileSize: r.audioSize,
+			Model:    r.request.EffectiveModel(),
+			Language: r.request.Language,
+			Diarized: r.request.Diarized(),
+			CacheHit: r.servedFromCache,
+			CostUSD:  r.costUSD,
+			Timeline: r.timeline,
+		})
+	}
+
+	return []byte(markdown.Format(&mapped, markdown.MetaInfo{
+		Filename:       filepath.Base(r.audioPath),
+		FileSize:       formatFileSize(r.audioSize),
+		Model:          r.opts.model,
+		Diarized:       r.request.Diarized(),
+		KeyTerms:       r.keyTerms,
+		Timestamp:      time.Now(),
+		SourceDuration: r.timeline.SourceDuration,
+	})), nil
 }
 
 // formatTermsSummary lists the words a transcript listened for, shortened to stay
