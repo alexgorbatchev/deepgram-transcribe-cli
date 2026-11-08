@@ -670,29 +670,57 @@ func TestJobRecordSaysWhetherPreparedAudioWasUploaded(t *testing.T) {
 
 // TestCostEstimateCountsEveryUploadedChannel covers a stereo recording
 // uploaded as it is, because trimming found nothing to cut and merging is
-// off: Deepgram bills the processed duration of both channels, although its
-// response reports one, and a cache hit estimates the same.
+// off, or because preprocessing is off: Deepgram bills the processed duration
+// of both channels, although its response reports one, and a cache hit
+// estimates the same.
 func TestCostEstimateCountsEveryUploadedChannel(t *testing.T) {
-	server := newTranscribeServer(t, transcribeResponseJSON)
-	cacheDir := t.TempDir()
-	audioPath := writeAudio(t, t.TempDir(), "interview.m4a", "fake stereo audio")
-	want, _ := deepgram.EstimateCostUSD(5.2, 2, deepgram.Options{Model: defaultModel, Terms: terms.DefaultTechTerms()})
-	for _, cacheHit := range []bool{false, true} {
-		root, out, errOut := newTestCLIWithMedia(t, cacheDir, server.URL, &fakeMedia{t: t, sourceDuration: "5.2", channels: 2})
-		root.SetArgs([]string{"transcript", "create", audioPath, "--api-key", "test-key", "--no-mono", "--trim-mode", "silence", "--format", "json"})
-		if err := root.Execute(); err != nil {
-			t.Fatalf("transcript create failed: %v\n%s", err, errOut)
-		}
-		var doc struct {
-			CacheHit bool     `json:"cache_hit"`
-			Cost     *float64 `json:"cost_estimate_usd"`
-		}
-		if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
-			t.Fatal(err)
-		}
-		if doc.CacheHit != cacheHit || doc.Cost == nil || *doc.Cost != want {
-			t.Fatalf("cache hit %t: document %+v, want cost %v", cacheHit, doc, want)
-		}
+	stereo, _ := deepgram.EstimateCostUSD(5.2, 2, deepgram.Options{Model: defaultModel, Terms: terms.DefaultTechTerms()})
+	mono, _ := deepgram.EstimateCostUSD(5.2, 1, deepgram.Options{Model: defaultModel, Terms: terms.DefaultTechTerms()})
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		probeErr error
+		want     float64
+	}{
+		{"nothing to cut", []string{"--no-mono", "--trim-mode", "silence"}, nil, stereo},
+		{"preprocessing off", []string{"--no-preprocess"}, nil, stereo},
+		{"merging and trimming off", []string{"--no-mono", "--trim-mode", "none"}, nil, stereo},
+		{"no ffprobe", []string{"--no-preprocess"}, errors.New("ffprobe missing"), mono},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := newTranscribeServer(t, transcribeResponseJSON)
+			cacheDir := t.TempDir()
+			audioPath := writeAudio(t, t.TempDir(), "interview.m4a", "fake stereo audio")
+			for _, cacheHit := range []bool{false, true} {
+				media := &fakeMedia{t: t, sourceDuration: "5.2", channels: 2, probeErr: tc.probeErr}
+				root, out, errOut := newTestCLIWithMedia(t, cacheDir, server.URL, media)
+				root.SetArgs(append([]string{"transcript", "create", audioPath, "--api-key", "test-key", "--format", "json"}, tc.args...))
+				if err := root.Execute(); err != nil {
+					t.Fatalf("transcript create failed: %v\n%s", err, errOut)
+				}
+				var doc struct {
+					CacheHit bool     `json:"cache_hit"`
+					Cost     *float64 `json:"cost_estimate_usd"`
+				}
+				if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+					t.Fatal(err)
+				}
+				if doc.CacheHit != cacheHit || doc.Cost == nil || *doc.Cost != tc.want {
+					t.Fatalf("cache hit %t: document %+v, want cost %v", cacheHit, doc, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestChannelCountStopsOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	media := &fakeMedia{t: t, probeErr: errors.New("signal: killed")}
+	run, _, _ := newPrepareRun(t, media, &transcriptOptions{noPreprocess: true})
+	run.cmd.SetContext(ctx)
+	cancel()
+	if _, err := run.prepareUpload(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v", err)
 	}
 }
 

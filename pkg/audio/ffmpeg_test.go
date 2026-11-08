@@ -404,19 +404,56 @@ func TestPreprocessAudioKeepsUncutAudio(t *testing.T) {
 	}
 }
 
-// TestPreprocessAudioCutsTheTailAfterMeasuring covers one range from the
-// start that ends before the recording does: the measuring decode finds the
-// tail, so the recording is decoded again and cut.
-func TestPreprocessAudioCutsTheTailAfterMeasuring(t *testing.T) {
-	fake := &fakeFFmpeg{t: t, decoded: countingPCM(6000, 2), silences: "lavfi.silence_start=4\n"}
-	source := StreamInfo{SampleRate: 1000, Channels: 2}
-	got, cleanup, err := PreprocessAudio(t.Context(), "talk.wav", source, fake.options(PreprocessOptions{Trim: TrimSilence}))
+// TestPreprocessAudioCutsATailInOnePass covers one range from the start of
+// an unmerged recording. When detection proved that the recording runs past
+// the range, it is cut in one decode; otherwise it is measured first, so a
+// recording kept whole is never encoded, and decoded again only if its tail
+// is cut after all.
+func TestPreprocessAudioCutsATailInOnePass(t *testing.T) {
+	// The silence from 4 s is still open at the end, so it lasted at least
+	// the 2 s minimum: the recording is proven to run to 6 s.
+	for _, tc := range []struct {
+		name       string
+		padding    float64
+		minSilence string
+		kept       []timeline.Range
+		calls      int
+	}{
+		{"tail proven", 0, "2.0", []timeline.Range{{Start: 0, End: 4}}, 3},
+		{"whole recording", 2.5, "2.0", nil, 2},
+		{"tail found by measuring", 1.99, "2.0", []timeline.Range{{Start: 0, End: 5.99}}, 4},
+		// A duration in a form only ffmpeg reads proves nothing past 4 s.
+		{"unreadable minimum silence", 0, "00:00:02", []timeline.Range{{Start: 0, End: 4}}, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeFFmpeg{t: t, decoded: countingPCM(6000, 2), silences: "lavfi.silence_start=4\n"}
+			source := StreamInfo{SampleRate: 1000, Channels: 2}
+			got, cleanup, err := PreprocessAudio(t.Context(), "talk.wav", source, fake.options(PreprocessOptions{Trim: TrimSilence, Padding: tc.padding, SilenceDuration: tc.minSilence}))
+			defer cleanup()
+			if err != nil || !reflect.DeepEqual(got.Kept, tc.kept) || got.SourceDuration != 6 || (tc.kept == nil) != (got.Path == "talk.wav") {
+				t.Fatalf("got %+v, error %v", got, err)
+			}
+			if len(fake.calls) != tc.calls {
+				t.Fatalf("calls %v, want %d", fake.calls, tc.calls)
+			}
+		})
+	}
+}
+
+func TestPreprocessAudioCutsASpeechTailInOnePass(t *testing.T) {
+	speech := readSpeechFixture(t)
+	detected := append(append([]byte{}, speech...), noisePCM(3, 7)...)
+	const rate = 1000
+	total := float64(len(detected)/2) / vadSampleRate
+	fake := &fakeFFmpeg{t: t, speech: detected, decoded: countingPCM(int(total*rate), 1)}
+	source := StreamInfo{SampleRate: rate, Channels: 1}
+	got, cleanup, err := PreprocessAudio(t.Context(), "talk.opus", source, fake.options(PreprocessOptions{Trim: TrimVAD, VAD: defaultVAD, Padding: 0.1}))
 	defer cleanup()
-	if err != nil || !reflect.DeepEqual(got.Kept, []timeline.Range{{Start: 0, End: 4}}) || got.SourceDuration != 6 || got.Duration != 4 || got.Channels != 2 {
+	if err != nil || len(got.Kept) != 1 || got.Kept[0].Start != 0 || got.Kept[0].End > total-2 {
 		t.Fatalf("got %+v, error %v", got, err)
 	}
-	if len(fake.calls) != 4 {
-		t.Fatalf("calls %v, want silence detection, two decodes and an encode", fake.calls)
+	if len(fake.calls) != 3 {
+		t.Fatalf("calls %v, want voice detection, one decode and an encode", fake.calls)
 	}
 }
 

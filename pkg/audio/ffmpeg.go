@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -22,6 +23,10 @@ const (
 	// pcmBytesPerSample is the size of one signed 16-bit sample, the format
 	// audio is decoded to before it is measured and cut.
 	pcmBytesPerSample = 2
+	// lengthMargin is how far, in seconds, the length detection proves the
+	// input has may overstate the decoded length: voice detection counts
+	// resampled samples and silencedetect reports rounded timestamps.
+	lengthMargin = 0.05
 	// unboundedSamples stands in for the end of audio whose length is not
 	// known yet. It is decades of audio at any sample rate, and small enough
 	// that its offset in bytes cannot overflow for any channel count ffmpeg
@@ -176,7 +181,7 @@ func (p *preparation) run() (Prepared, error) {
 		return p.downmix()
 	}
 
-	ranges, err := p.detect()
+	ranges, provenLength, err := p.detect()
 	if err != nil {
 		return Prepared{}, err
 	}
@@ -188,11 +193,15 @@ func (p *preparation) run() (Prepared, error) {
 	rate := p.source.SampleRate
 
 	spans := toSampleSpans(ranges, p.opts.Padding, rate, unboundedSamples)
-	if !downmixes && len(spans) == 1 && spans[0].start == 0 {
+	provenSamples := int64(math.Floor((provenLength - lengthMargin) * float64(rate)))
+	if !downmixes && len(spans) == 1 && spans[0].start == 0 && spans[0].end > provenSamples {
 		// One span from the start keeps the whole recording unless the
 		// recording runs past it, and a whole recording that is not merged
-		// is uploaded as it is. Measuring first avoids encoding audio only
-		// to discard it, at the cost of decoding twice when the tail is cut.
+		// is uploaded as it is. Detection did not prove that the recording
+		// runs past the span, so measuring first avoids encoding audio only to
+		// discard it. Only a span ending within lengthMargin of the proven
+		// length, or one that runs to the end, gets here, so the second
+		// decode that a cut tail then needs is rare.
 		totalSamples, err := p.cut(nil, channels)
 		if err != nil {
 			return Prepared{}, err
@@ -305,8 +314,9 @@ func (p *preparation) downmix() (Prepared, error) {
 }
 
 // detect returns the ranges of the input, in seconds, that the trim mode
-// considers worth keeping, before padding.
-func (p *preparation) detect() ([]timeline.Range, error) {
+// considers worth keeping, before padding, and how many seconds of audio the
+// detection saw, which the decoded length exceeds by at most lengthMargin.
+func (p *preparation) detect() ([]timeline.Range, float64, error) {
 	if p.opts.Trim == TrimVAD {
 		return p.detectSpeech()
 	}
@@ -314,8 +324,10 @@ func (p *preparation) detect() ([]timeline.Range, error) {
 }
 
 // detectSound keeps everything between silences that ffmpeg's silencedetect
-// filter reports.
-func (p *preparation) detectSound() ([]timeline.Range, error) {
+// filter reports. A silence still open at the end was reported only after it
+// had lasted the minimum silence duration, so the audio runs at least that
+// far past its start.
+func (p *preparation) detectSound() ([]timeline.Range, float64, error) {
 	threshold := p.opts.SilenceThreshold
 	if threshold == "" {
 		threshold = DefaultSilenceThreshold
@@ -329,19 +341,31 @@ func (p *preparation) detectSound() ([]timeline.Range, error) {
 	args := []string{"-nostdin", "-v", "error", "-i", p.input, "-map", "0:a:0", "-af", filter, "-f", "null", "-"}
 	output, err := run(p.ctx, p.runner, "ffmpeg", args...)
 	if err != nil {
-		return nil, fmt.Errorf("ffmpeg silence detection failed: %w (output: %s)", err, strings.TrimSpace(string(output)))
+		return nil, 0, fmt.Errorf("ffmpeg silence detection failed: %w (output: %s)", err, strings.TrimSpace(string(output)))
 	}
 
 	silences, err := parseSilences(output)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return complement(silences), nil
+	minSilence, err := strconv.ParseFloat(duration, 64)
+	if err != nil {
+		minSilence = 0 // ffmpeg accepted it, so it is a form only ffmpeg reads; prove nothing from it
+	}
+	seen := 0.0
+	for _, s := range silences {
+		if math.IsInf(s.End, 1) {
+			seen = math.Max(seen, s.Start+minSilence)
+		} else {
+			seen = math.Max(seen, s.End)
+		}
+	}
+	return complement(silences), seen, nil
 }
 
 // detectSpeech pipes the input, decoded to the format the speech model reads,
 // into the model and keeps what it hears as speech.
-func (p *preparation) detectSpeech() ([]timeline.Range, error) {
+func (p *preparation) detectSpeech() ([]timeline.Range, float64, error) {
 	ctx, cancel := context.WithCancel(p.ctx)
 	defer cancel()
 
@@ -353,19 +377,32 @@ func (p *preparation) detectSpeech() ([]timeline.Range, error) {
 		decoded <- err
 	}()
 
-	ranges, detectErr := detectSpeech(reader, p.opts.VAD)
+	counted := &countingReader{reader: reader}
+	ranges, detectErr := detectSpeech(counted, p.opts.VAD)
 	if detectErr != nil {
 		// Stops the decoder, which is otherwise left writing to nobody.
 		_ = reader.CloseWithError(detectErr)
 		cancel()
 	}
 	if err := <-decoded; err != nil {
-		return nil, fmt.Errorf("ffmpeg decoding audio for voice detection failed: %w", err)
+		return nil, 0, fmt.Errorf("ffmpeg decoding audio for voice detection failed: %w", err)
 	}
 	if detectErr != nil {
-		return nil, detectErr
+		return nil, 0, detectErr
 	}
-	return ranges, nil
+	return ranges, float64(counted.n/pcmBytesPerSample) / vadSampleRate, nil
+}
+
+// countingReader counts the bytes read through it.
+type countingReader struct {
+	reader io.Reader
+	n      int64
+}
+
+func (r *countingReader) Read(b []byte) (int, error) {
+	n, err := r.reader.Read(b)
+	r.n += int64(n)
+	return n, err
 }
 
 // decodeArgs decodes the input's first audio stream to raw signed 16-bit PCM

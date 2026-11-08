@@ -491,7 +491,7 @@ func (r *transcriptRun) prepareUpload() (func(), error) {
 		return noCleanup, nil
 	}
 	if !r.opts.wantsMono() && !r.opts.wantsTrim() {
-		return noCleanup, nil
+		return noCleanup, r.countUploadChannels()
 	}
 
 	if !r.preprocessingReady() {
@@ -585,6 +585,24 @@ func (r *transcriptRun) prepareUpload() (func(), error) {
 	}
 
 	return cleanup, nil
+}
+
+// countUploadChannels reads the original recording's channel count for the
+// cost estimate when nothing is prepared: Deepgram bills every channel, and
+// the channel count in its response describes the transcript, not the upload.
+// Without a usable ffprobe the count stays unknown and Deepgram's stands in.
+func (r *transcriptRun) countUploadChannels() error {
+	ctx := r.cmd.Context()
+	source, err := audio.Probe(ctx, r.audioPath, r.global.depsRunner)
+	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		r.out.Detail("channels: unknown (%v)", err)
+		return nil
+	}
+	r.uploadChannels = source.Channels
+	return nil
 }
 
 // Preprocessing changes duration and channels, but re-encoding can increase the
