@@ -53,8 +53,8 @@ const (
 )
 
 // parseSilences reads the silence ranges that silencedetect reported through
-// ametadata. A silence still open when the audio ends runs to total.
-func parseSilences(output []byte, total float64) ([]timeline.Range, error) {
+// ametadata. A silence still open when the audio ends has an infinite end.
+func parseSilences(output []byte) ([]timeline.Range, error) {
 	var silences []timeline.Range
 	open := math.NaN()
 
@@ -83,23 +83,27 @@ func parseSilences(output []byte, total float64) ([]timeline.Range, error) {
 		return nil, fmt.Errorf("reading silence detection output: %w", err)
 	}
 	if !math.IsNaN(open) {
-		silences = append(silences, timeline.Range{Start: open, End: total})
+		silences = append(silences, timeline.Range{Start: open, End: math.Inf(1)})
 	}
 	return silences, nil
 }
 
-// complement returns the parts of [0, total] that no silence covers.
-func complement(silences []timeline.Range, total float64) []timeline.Range {
+// complement returns the parts of the audio that no silence covers. The last
+// range is open-ended: it runs to the end of the decoded audio, whose length
+// is only known once it has been decoded. ffprobe's duration is not used,
+// because for containers without a duration index it is an estimate that can
+// fall short of the real audio and would cut its tail.
+func complement(silences []timeline.Range) []timeline.Range {
 	var kept []timeline.Range
 	cursor := 0.0
 	for _, s := range silences {
 		if s.Start > cursor {
-			kept = append(kept, timeline.Range{Start: cursor, End: math.Min(s.Start, total)})
+			kept = append(kept, timeline.Range{Start: cursor, End: s.Start})
 		}
 		cursor = math.Max(cursor, s.End)
 	}
-	if cursor < total {
-		kept = append(kept, timeline.Range{Start: cursor, End: total})
+	if !math.IsInf(cursor, 1) {
+		kept = append(kept, timeline.Range{Start: cursor, End: math.Inf(1)})
 	}
 	return kept
 }
@@ -109,13 +113,15 @@ type sampleSpan struct{ start, end int64 }
 
 // toSampleSpans widens each range by padding seconds on both sides, converts it
 // to whole samples, clamps it to the audio and merges ranges that touch.
-// Rounding outward means a span always contains the range it came from.
+// Rounding outward means a span always contains the range it came from. Ends
+// may be infinite; clamping happens before conversion to integers.
 func toSampleSpans(ranges []timeline.Range, padding float64, sampleRate int, totalSamples int64) []sampleSpan {
 	rate := float64(sampleRate)
+	total := float64(totalSamples)
 	var spans []sampleSpan
 	for _, r := range ranges {
-		start := max(int64(math.Floor((r.Start-padding)*rate)), 0)
-		end := min(int64(math.Ceil((r.End+padding)*rate)), totalSamples)
+		start := int64(math.Max(math.Floor((r.Start-padding)*rate), 0))
+		end := int64(math.Min(math.Ceil((r.End+padding)*rate), total))
 		if end <= start {
 			continue
 		}

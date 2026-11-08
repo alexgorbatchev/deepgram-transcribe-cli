@@ -21,9 +21,11 @@ const (
 	// pcmBytesPerSample is the size of one signed 16-bit sample, the format
 	// audio is decoded to before it is measured and cut.
 	pcmBytesPerSample = 2
-	// defaultExtension names the prepared file when the input has none, which
-	// also tells ffmpeg which encoder to use.
-	defaultExtension = ".m4a"
+	// preparedName is the prepared upload. FLAC is lossless and, unlike AAC,
+	// MP3 or Opus, adds no encoder priming delay, so the prepared audio holds
+	// exactly the kept samples and the kept ranges stay exact on Deepgram's
+	// side too.
+	preparedName = "audio.flac"
 )
 
 // ErrNoSpeech reports that trimming found nothing worth keeping.
@@ -52,8 +54,10 @@ type Prepared struct {
 // PreprocessAudio prepares audio for upload: it merges channels when Mono is
 // set, and cuts what Trim finds not worth uploading.
 //
-// Cutting decodes the input to raw PCM, copies the kept sample ranges and
-// encodes the result, so the kept ranges are exact by construction. source
+// Prepared audio is 16-bit FLAC at the input's sample rate, with the input's
+// channels or one channel after Mono. Cutting decodes the input to raw PCM,
+// copies the kept sample ranges and encodes them losslessly, so the kept
+// ranges are exact by construction. source
 // describes the input's audio stream, as Probe reports it.
 //
 // The returned function removes every temporary file and is safe to call more
@@ -80,7 +84,7 @@ func PreprocessAudio(ctx context.Context, inputPath string, source StreamInfo, o
 		source:  source,
 		opts:    opts,
 		workDir: workDir,
-		output:  filepath.Join(workDir, "audio"+outputExtension(inputPath)),
+		output:  filepath.Join(workDir, preparedName),
 		runner:  opts.Runner,
 	}
 	if p.runner == nil {
@@ -153,7 +157,7 @@ func (p *preparation) run() (Prepared, error) {
 	encodeArgs := []string{
 		"-nostdin", "-v", "error", "-y",
 		"-f", "s16le", "-ar", strconv.Itoa(p.source.SampleRate), "-ac", strconv.Itoa(channels),
-		"-i", cut, p.output,
+		"-i", cut, "-c:a", "flac", "-sample_fmt", "s16", p.output,
 	}
 	if err := p.ffmpeg("encoding trimmed audio", encodeArgs...); err != nil {
 		return Prepared{}, err
@@ -164,7 +168,7 @@ func (p *preparation) run() (Prepared, error) {
 
 // downmix merges every channel into one without cutting anything.
 func (p *preparation) downmix() (Prepared, error) {
-	args := []string{"-nostdin", "-v", "error", "-y", "-i", p.input, "-map", "0:a:0", "-ac", "1", p.output}
+	args := []string{"-nostdin", "-v", "error", "-y", "-i", p.input, "-map", "0:a:0", "-ac", "1", "-c:a", "flac", "-sample_fmt", "s16", p.output}
 	if err := p.ffmpeg("downmixing audio", args...); err != nil {
 		return Prepared{}, err
 	}
@@ -199,11 +203,11 @@ func (p *preparation) detectSound() ([]timeline.Range, error) {
 		return nil, fmt.Errorf("ffmpeg silence detection failed: %w (output: %s)", err, strings.TrimSpace(string(output)))
 	}
 
-	silences, err := parseSilences(output, p.source.Duration)
+	silences, err := parseSilences(output)
 	if err != nil {
 		return nil, err
 	}
-	return complement(silences, p.source.Duration), nil
+	return complement(silences), nil
 }
 
 // detectSpeech decodes the input to the format the speech model reads and
@@ -239,14 +243,6 @@ func (p *preparation) ffmpeg(step string, args ...string) error {
 		return fmt.Errorf("ffmpeg %s failed: %w (output: %s)", step, err, strings.TrimSpace(string(output)))
 	}
 	return nil
-}
-
-// outputExtension keeps the input's container, which keeps its codec family.
-func outputExtension(inputPath string) string {
-	if ext := filepath.Ext(inputPath); ext != "" {
-		return ext
-	}
-	return defaultExtension
 }
 
 // DetectMIMEType returns the MIME type corresponding to an audio file's extension.

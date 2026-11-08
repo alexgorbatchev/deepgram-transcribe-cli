@@ -566,7 +566,7 @@ func (r *transcriptRun) fetchTranscript() error {
 	response, err := r.client.Transcribe(
 		r.cmd.Context(),
 		bytes.NewReader(payload),
-		audio.DetectMIMEType(r.audioPath),
+		audio.DetectMIMEType(r.uploadPath),
 		r.request,
 	)
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -116,11 +117,11 @@ func TestPreprocessAudioDownmixes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"-nostdin", "-v", "error", "-y", "-i", "recording", "-map", "0:a:0", "-ac", "1", got.Path}
+	want := []string{"-nostdin", "-v", "error", "-y", "-i", "recording", "-map", "0:a:0", "-ac", "1", "-c:a", "flac", "-sample_fmt", "s16", got.Path}
 	if len(fake.calls) != 1 || !reflect.DeepEqual(fake.calls[0], want) {
 		t.Fatalf("calls %v, want %v", fake.calls, want)
 	}
-	if !strings.HasSuffix(got.Path, defaultExtension) || !strings.Contains(got.Path, "transcribe-proc-") || got.Kept != nil {
+	if filepath.Base(got.Path) != preparedName || !strings.Contains(got.Path, "transcribe-proc-") || got.Kept != nil {
 		t.Fatalf("unexpected result %+v", got)
 	}
 	if !strings.HasPrefix(got.Path, os.TempDir()) {
@@ -168,11 +169,47 @@ func TestPreprocessAudioCutsSilenceAtExactSamples(t *testing.T) {
 		if decode := strings.Join(fake.calls[1], " "); !strings.Contains(decode, fmt.Sprintf("-ac %d -ar 1000", channels)) {
 			t.Fatalf("decode did not keep the source format: %v", decode)
 		}
-		if !strings.HasSuffix(got.Path, ".wav") {
-			t.Fatalf("prepared audio changed container: %s", got.Path)
+		encode := strings.Join(fake.calls[2], " ")
+		if filepath.Base(got.Path) != preparedName || !strings.Contains(encode, "-c:a flac -sample_fmt s16") ||
+			!strings.Contains(encode, fmt.Sprintf("-f s16le -ar 1000 -ac %d", channels)) {
+			t.Fatalf("prepared audio is not 16-bit FLAC in the source format: %s %s", got.Path, encode)
+		}
+		// The encoder receives exactly the kept samples, so the upload lasts
+		// exactly as long as the kept ranges add up to.
+		keptSamples := 0
+		for _, r := range got.Kept {
+			keptSamples += int(math.Round((r.End - r.Start) * rate))
+		}
+		if len(uploaded)/(2*channels) != keptSamples {
+			t.Fatalf("upload holds %d samples, kept ranges add up to %d", len(uploaded)/(2*channels), keptSamples)
 		}
 		cleanup()
 		assertRemoved(t, filepath.Dir(got.Path))
+	}
+}
+
+// TestPreprocessAudioKeepsTheTailBeyondAShortDurationEstimate covers containers
+// without a duration index, such as ADTS AAC, where ffprobe estimates a
+// duration shorter than the decoded audio. The audio after the estimate must
+// still be uploaded.
+func TestPreprocessAudioKeepsTheTailBeyondAShortDurationEstimate(t *testing.T) {
+	const rate = 1000
+	fake := &fakeFFmpeg{t: t, decoded: countingPCM(10*rate, 1), silences: "lavfi.silence_start=2\nlavfi.silence_end=4\n"}
+	source := StreamInfo{Duration: 9.2, SampleRate: rate, Channels: 1}
+	got, cleanup, err := PreprocessAudio(t.Context(), "talk.aac", source, PreprocessOptions{Trim: TrimSilence, Runner: fake.run})
+	defer cleanup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []timeline.Range{{Start: 0, End: 2}, {Start: 4, End: 10}}; !reflect.DeepEqual(got.Kept, want) {
+		t.Fatalf("kept %v, want %v", got.Kept, want)
+	}
+	uploaded, err := os.ReadFile(got.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frames := framesOf(t, uploaded, 1); frames[len(frames)-1] != 10*rate-1 {
+		t.Fatalf("upload ends at sample %d, want the last decoded sample %d", frames[len(frames)-1], 10*rate-1)
 	}
 }
 
